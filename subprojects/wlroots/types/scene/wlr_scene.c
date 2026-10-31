@@ -2154,6 +2154,10 @@ static bool get_sdr_on_hdr_primaries(const struct wlr_scene_buffer *scene_buffer
 	return output_get_sdr_gamut_primaries(output, out);
 }
 
+static int scene_blur_margin(const struct wlr_scene *scene) {
+	return ceil(2 * scene->blur.size * (1 << scene->blur.passes)) + 1;
+}
+
 static void subtract_rounded_corners(pixman_region32_t *region, const struct wlr_box *box,
 		int radius, bool top) {
 	for (int y = 0; y < radius; y++) {
@@ -2211,6 +2215,7 @@ static void scene_buffer_render_blur(const struct wlr_scene_buffer *scene_buffer
 			.clip = &region,
 			.passes = passes,
 			.size = data->output->scene->blur.size,
+			.margin = scene_blur_margin(data->output->scene),
 			.contrast = data->output->scene->blur.contrast,
 			.brightness = data->output->scene->blur.brightness,
 			.vibrancy = data->output->scene->blur.vibrancy,
@@ -2247,7 +2252,7 @@ static void expand_damage_for_blur(struct render_list_entry *list, int list_len,
 	if (scene->blur.passes <= 0) {
 		return;
 	}
-	int margin = ceil(2 * scene->blur.size * (1 << scene->blur.passes)) + 1;
+	int margin = scene_blur_margin(scene);
 
 	// Twice, for blurred surfaces that overlap
 	for (int pass = 0; pass < 2; pass++) {

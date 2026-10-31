@@ -315,6 +315,7 @@ struct wlr_vk_blur_pcr_data {
 	float brightness;
 	float vibrancy;
 	float noise;
+	int32_t origin[2];
 };
 
 bool vulkan_setup_one_pass_framebuffer(struct wlr_vk_render_buffer *buffer,

@@ -421,7 +421,8 @@ static bool render_pass_submit(struct wlr_render_pass *wlr_pass) {
 				.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 				.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 				.srcAccessMask = VK_ACCESS_SHADER_READ_BIT,
-				.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+				.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+					VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
 				.subresourceRange = {
 					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
 					.layerCount = 1,
@@ -1221,25 +1222,41 @@ static int mip_size(int size, int level) {
 }
 
 static void blur_dispatch(struct wlr_vk_render_pass *pass, VkDescriptorSet ds,
-		int width, int height, const struct wlr_render_blur_options *options,
-		enum wlr_vk_blur_mode mode) {
+		const pixman_box32_t *box, int level, int width, int height,
+		const struct wlr_render_blur_options *options, enum wlr_vk_blur_mode mode) {
 	VkCommandBuffer cb = pass->command_buffer->vk;
 	struct wlr_vk_renderer *renderer = pass->renderer;
 
+	int level_width = mip_size(width, level);
+	int level_height = mip_size(height, level);
+
+	// Round outwards, to the shader's work groups on the end side
+	int x1 = box->x1 >> level;
+	int y1 = box->y1 >> level;
+	int x2 = (box->x2 + (1 << level) - 1) >> level;
+	int y2 = (box->y2 + (1 << level) - 1) >> level;
+	if (x2 > level_width) {
+		x2 = level_width;
+	}
+	if (y2 > level_height) {
+		y2 = level_height;
+	}
+
 	struct wlr_vk_blur_pcr_data pcr = {
-		.halfpixel = { 0.5f / width, 0.5f / height },
+		.halfpixel = { 0.5f / level_width, 0.5f / level_height },
 		.offset = options->size,
 		.mode = mode,
 		.contrast = options->contrast,
 		.brightness = options->brightness,
 		.vibrancy = options->vibrancy,
 		.noise = options->noise,
+		.origin = { x1, y1 },
 	};
 	vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, renderer->blur_pipe_layout,
 		0, 1, &ds, 0, NULL);
 	vkCmdPushConstants(cb, renderer->blur_pipe_layout, VK_SHADER_STAGE_COMPUTE_BIT,
 		0, sizeof(pcr), &pcr);
-	vkCmdDispatch(cb, (width + 15) / 16, (height + 15) / 16, 1);
+	vkCmdDispatch(cb, (x2 - x1 + 15) / 16, (y2 - y1 + 15) / 16, 1);
 }
 
 /*
@@ -1272,6 +1289,15 @@ static void render_pass_add_blur(struct wlr_render_pass *wlr_pass,
 	VkImage blend = buffer->two_pass.blend_image;
 	VkImage blur = buffer->two_pass.blur_image;
 
+	// Only what the clip region reads needs blurring
+	const pixman_box32_t *extents = pixman_region32_extents(options->clip);
+	pixman_box32_t box = {
+		.x1 = extents->x1 - options->margin > 0 ? extents->x1 - options->margin : 0,
+		.y1 = extents->y1 - options->margin > 0 ? extents->y1 - options->margin : 0,
+		.x2 = extents->x2 + options->margin < width ? extents->x2 + options->margin : width,
+		.y2 = extents->y2 + options->margin < height ? extents->y2 + options->margin : height,
+	};
+
 	vkCmdNextSubpass(cb, VK_SUBPASS_CONTENTS_INLINE);
 	vkCmdEndRenderPass(cb);
 
@@ -1285,8 +1311,8 @@ static void render_pass_add_blur(struct wlr_render_pass *wlr_pass,
 			blur_image_barrier(cb, blur, i, VK_IMAGE_LAYOUT_GENERAL,
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		}
-		blur_dispatch(pass, buffer->two_pass.blur_down_ds[i],
-			mip_size(width, i + 1), mip_size(height, i + 1), options,
+		blur_dispatch(pass, buffer->two_pass.blur_down_ds[i], &box, i + 1,
+			width, height, options,
 			i == 0 ? WLR_VK_BLUR_MODE_FIRST_DOWN : WLR_VK_BLUR_MODE_DOWN);
 	}
 	for (int i = passes - 1; i >= 0; i--) {
@@ -1296,8 +1322,8 @@ static void render_pass_add_blur(struct wlr_render_pass *wlr_pass,
 			blur_image_barrier(cb, blur, i, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 				VK_IMAGE_LAYOUT_GENERAL);
 		}
-		blur_dispatch(pass, buffer->two_pass.blur_up_ds[i],
-			mip_size(width, i), mip_size(height, i), options,
+		blur_dispatch(pass, buffer->two_pass.blur_up_ds[i], &box, i,
+			width, height, options,
 			i == 0 ? WLR_VK_BLUR_MODE_LAST_UP : WLR_VK_BLUR_MODE_UP);
 	}
 

@@ -16,6 +16,7 @@ layout (push_constant) uniform PushConstants {
 	float brightness;
 	float vibrancy;
 	float noise;
+	ivec2 origin;
 } data;
 
 // Matches enum wlr_vk_blur_mode
@@ -63,7 +64,7 @@ float hash(vec2 p) {
 }
 
 void main() {
-	ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+	ivec2 pos = ivec2(gl_GlobalInvocationID.xy) + data.origin;
 	vec2 uv = (vec2(pos) + 0.5) / vec2(imageSize(dst));
 
 	vec4 color = data.mode <= BLUR_MODE_DOWN ? down(uv) : up(uv);

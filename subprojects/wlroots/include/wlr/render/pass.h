@@ -227,6 +227,8 @@ struct wlr_render_blur_options {
 	int passes;
 	// Sample offset of each pass, in half pixels
 	float size;
+	// How far outside clip pixels are read
+	int margin;
 	float contrast, brightness, vibrancy, noise;
 };
 
