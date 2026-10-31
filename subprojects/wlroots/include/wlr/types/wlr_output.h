@@ -210,6 +210,10 @@ struct wlr_output {
 		float min, max, max_frame_average;
 	} hdr_target_luminance;
 
+	// On HDR outputs, where the current buffer holds content without the SDR
+	// gamut boost, in buffer coordinates. Maintained by wlr_scene.
+	pixman_region32_t unboosted_region;
+
 	bool enabled;
 	float scale;
 	enum wl_output_subpixel subpixel;

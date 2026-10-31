@@ -442,7 +442,7 @@ static struct cmd_results *focus_child(void) {
 	return cmd_results_new(CMD_SUCCESS, NULL);
 }
 
-struct cmd_results *cmd_focus(int argc, char **argv) {
+static struct cmd_results *do_focus(int argc, char **argv) {
 	if (config->reading || !config->active) {
 		return cmd_results_new(CMD_DEFER, NULL);
 	}
@@ -563,4 +563,22 @@ struct cmd_results *cmd_focus(int argc, char **argv) {
 	}
 
 	return cmd_results_new(CMD_SUCCESS, NULL);
+}
+
+struct cmd_results *cmd_focus(int argc, char **argv) {
+	struct sway_seat *seat = config->handler_context.seat;
+	struct sway_container *previous = NULL;
+	if (config->active && seat != NULL) {
+		previous = seat_get_focused_container(seat);
+	}
+
+	struct cmd_results *result = do_focus(argc, argv);
+
+	if (config->active && seat != NULL && result != NULL && result->status == CMD_SUCCESS) {
+		struct sway_container *focused = seat_get_focused_container(seat);
+		if (focused != NULL && focused != previous) {
+			container_focus_flash(focused);
+		}
+	}
+	return result;
 }

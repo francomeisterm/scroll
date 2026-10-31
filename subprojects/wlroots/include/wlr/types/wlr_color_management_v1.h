@@ -14,6 +14,7 @@
 
 #include <wlr/render/color.h>
 
+struct wlr_color_manager_v1;
 struct wlr_output;
 
 struct wlr_renderer;
@@ -40,6 +41,12 @@ struct wlr_image_description_v1_data {
  */
 void wlr_image_description_v1_data_set_output_target(
 	struct wlr_image_description_v1_data *data, const struct wlr_output *output);
+
+/**
+ * Tell clients that image descriptions have changed in a way the data doesn't
+ * show, like the PQ reference luminance.
+ */
+void wlr_color_manager_v1_notify_preferred_changed(struct wlr_color_manager_v1 *manager);
 
 struct wlr_color_manager_v1_features {
 	bool icc_v2_v4;

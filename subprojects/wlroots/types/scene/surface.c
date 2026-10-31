@@ -4,6 +4,7 @@
 #include <wlr/types/wlr_alpha_modifier_v1.h>
 #include <wlr/types/wlr_color_management_v1.h>
 #include <wlr/types/wlr_color_representation_v1.h>
+#include <wlr/types/wlr_ext_background_effect_v1.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_fractional_scale_v1.h>
@@ -384,6 +385,11 @@ static void surface_reconfigure(struct wlr_scene_surface *scene_surface) {
 	wlr_scene_buffer_set_radius(scene_buffer, view_data.radius_top, view_data.radius_bottom);
 	wlr_scene_buffer_set_transform(scene_buffer, state->transform);
 	wlr_scene_buffer_set_opacity(scene_buffer, opacity);
+	const struct wlr_ext_background_effect_surface_v1_state *effect_state =
+		wlr_ext_background_effect_v1_get_surface_state(surface);
+	if (effect_state != NULL) {
+		wlr_scene_buffer_set_blur_region(scene_buffer, &effect_state->blur_region);
+	}
 	wlr_scene_buffer_set_transfer_function(scene_buffer, tf);
 	wlr_scene_buffer_set_primaries(scene_buffer, primaries);
 	wlr_scene_buffer_set_color_encoding(scene_buffer, color_encoding);

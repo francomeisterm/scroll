@@ -16,6 +16,7 @@
 #include <wlr/types/wlr_content_type_v1.h>
 #include <wlr/types/wlr_cursor_shape_v1.h>
 #include <wlr/types/wlr_data_control_v1.h>
+#include <wlr/types/wlr_ext_background_effect_v1.h>
 #include <wlr/types/wlr_ext_data_control_v1.h>
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_export_dmabuf_v1.h>
@@ -678,6 +679,9 @@ bool server_init(struct sway_server *server) {
 		}
 		wlr_scene_set_color_manager_v1(root->root_scene, cm);
 	}
+
+	wlr_ext_background_effect_manager_v1_create(server->wl_display, 1,
+		EXT_BACKGROUND_EFFECT_MANAGER_V1_CAPABILITY_BLUR);
 
 	if (!wlr_color_representation_manager_v1_create_with_renderer(
 			server->wl_display, 1, server->renderer)) {

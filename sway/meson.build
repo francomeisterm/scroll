@@ -131,6 +131,8 @@ sway_sources = files(
 	'commands/set.c',
 	'commands/set_mode.c',
 	'commands/sdr_nits.c',
+	'commands/focus_flash.c',
+	'commands/blur.c',
 	'commands/sdr_gamut.c',
 	'commands/set_size.c',
 	'commands/show_marks.c',

@@ -34,6 +34,8 @@ struct sway_output_state {
 struct sway_output {
 	struct sway_node node;
 
+	bool adaptive_sync_fullscreen;
+
 	struct {
 		struct wlr_scene_tree *shell_background;
 		struct wlr_scene_tree *shell_bottom;

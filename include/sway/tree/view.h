@@ -100,6 +100,7 @@ struct sway_view {
 	int natural_width, natural_height;
 
 	bool using_csd;
+	bool blur; // blur behind translucent parts
 
 	struct timespec urgent;
 	bool allow_request_urgent;

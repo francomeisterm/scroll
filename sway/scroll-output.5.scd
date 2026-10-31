@@ -166,14 +166,15 @@ must be separated by one space. For example:
 	This setting only has an effect on Wayland and DRM backends, as support for
 	presentation timestamps and predicted output refresh rate is required.
 
-*output* <name> adaptive_sync on|off|toggle
+*output* <name> adaptive_sync on|off|toggle|fullscreen
 	Enables or disables adaptive synchronization (often referred to as Variable
 	Refresh Rate, or by the vendor-specific names FreeSync/G-Sync).
 
 	Adaptive sync allows clients to submit frames a little too late without
 	having to wait a whole refresh period to display it on screen. Enabling
 	adaptive sync can improve latency, but can cause flickering on some
-	hardware.
+	hardware. With _fullscreen_, it's only enabled while a view is fullscreen
+	on the output.
 
 *output* <name> render_bit_depth 6|8|10
 	Controls the maximum color channel bit depth at which frames are

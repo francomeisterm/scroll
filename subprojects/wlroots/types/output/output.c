@@ -384,6 +384,7 @@ void wlr_output_init(struct wlr_output *output, struct wlr_backend *backend,
 	}
 
 	wlr_addon_set_init(&output->addons);
+	pixman_region32_init(&output->unboosted_region);
 
 	wl_list_init(&output->display_destroy.link);
 	output->display_destroy.notify = handle_display_destroy;
@@ -396,6 +397,7 @@ void wlr_output_init(struct wlr_output *output, struct wlr_backend *backend,
 void wlr_output_finish(struct wlr_output *output) {
 	wl_signal_emit_mutable(&output->events.destroy, NULL);
 	wlr_addon_set_finish(&output->addons);
+	pixman_region32_fini(&output->unboosted_region);
 
 	assert(wl_list_empty(&output->events.frame.listener_list));
 	assert(wl_list_empty(&output->events.damage.listener_list));

@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <wlr/render/color.h>
+#include <wlr/types/wlr_color_management_v1.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_scene.h>
 #include "sway/commands.h"
@@ -18,7 +19,13 @@ struct cmd_results *cmd_sdr_nits(int argc, char **argv) {
 	if (*end != '\0' || nits < 80 || nits > 1000) {
 		return cmd_results_new(CMD_INVALID, "Expected a value from 80 to 1000 nits");
 	}
+	if (nits == wlr_color_get_pq_reference_luminance()) {
+		return cmd_results_new(CMD_SUCCESS, NULL);
+	}
 	wlr_color_set_pq_reference_luminance(nits);
+	if (root->root_scene->color_manager_v1 != NULL) {
+		wlr_color_manager_v1_notify_preferred_changed(root->root_scene->color_manager_v1);
+	}
 	for (int i = 0; i < root->outputs->length; i++) {
 		struct sway_output *output = root->outputs->items[i];
 		wlr_scene_output_damage_whole(output->scene_output);

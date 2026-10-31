@@ -29,6 +29,13 @@ void wlr_render_pass_add_texture(struct wlr_render_pass *render_pass,
 	render_pass->impl->add_texture(render_pass, options);
 }
 
+void wlr_render_pass_add_blur(struct wlr_render_pass *render_pass,
+		const struct wlr_render_blur_options *options) {
+	if (render_pass->impl->add_blur != NULL) {
+		render_pass->impl->add_blur(render_pass, options);
+	}
+}
+
 void wlr_render_pass_add_rect(struct wlr_render_pass *render_pass,
 		const struct wlr_render_rect_options *options) {
 	assert(options->box.width >= 0 && options->box.height >= 0);

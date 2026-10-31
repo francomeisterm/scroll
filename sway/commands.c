@@ -49,6 +49,8 @@ static const struct cmd_handler handlers[] = {
 	{ "bindgesture", cmd_bindgesture },
 	{ "bindswitch", cmd_bindswitch },
 	{ "bindsym", cmd_bindsym },
+	{ "blur_passes", cmd_blur_passes },
+	{ "blur_style", cmd_blur_style },
 	{ "center_horizontal_if_fits", cmd_center_horizontal_if_fits },
 	{ "center_vertical_if_fits", cmd_center_vertical_if_fits },
 	{ "client.background", cmd_client_noop },
@@ -73,6 +75,7 @@ static const struct cmd_handler handlers[] = {
 	{ "floating_minimum_size", cmd_floating_minimum_size },
 	{ "floating_modifier", cmd_floating_modifier },
 	{ "focus", cmd_focus },
+	{ "focus_flash", cmd_focus_flash },
 	{ "focus_follows_mouse", cmd_focus_follows_mouse },
 	{ "focus_on_window_activation", cmd_focus_on_window_activation },
 	{ "focus_wrapping", cmd_focus_wrapping },
@@ -213,6 +216,7 @@ static const struct cmd_handler command_handlers[] = {
 	{ "trailmark", cmd_trailmark },
 	{ "unmark", cmd_unmark },
 	{ "urgent", cmd_urgent },
+	{ "window_blur", cmd_window_blur },
 };
 
 static int handler_compare(const void *_a, const void *_b) {

@@ -854,12 +854,14 @@ static void render_pass_add_texture(struct wlr_render_pass *wlr_pass,
 	}
 
 	float color_matrix[9];
-	if (options->primaries != NULL) {
+	if (options->primaries != NULL || options->dst_primaries != NULL) {
 		struct wlr_color_primaries srgb;
 		wlr_color_primaries_from_named(&srgb, WLR_COLOR_NAMED_PRIMARIES_SRGB);
 
-		wlr_color_primaries_transform_absolute_colorimetric(options->primaries,
-			&srgb, color_matrix);
+		wlr_color_primaries_transform_absolute_colorimetric(
+			options->primaries != NULL ? options->primaries : &srgb,
+			options->dst_primaries != NULL ? options->dst_primaries : &srgb,
+			color_matrix);
 	} else {
 		wlr_matrix_identity(color_matrix);
 	}
@@ -1191,8 +1193,161 @@ static void render_pass_add_shadow(struct wlr_render_pass *wlr_pass,
 	pixman_region32_fini(&clip);
 }
 
+static void blur_image_barrier(VkCommandBuffer cb, VkImage image, uint32_t level,
+		VkImageLayout old_layout, VkImageLayout new_layout) {
+	VkImageMemoryBarrier barrier = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.image = image,
+		.oldLayout = old_layout,
+		.newLayout = new_layout,
+		.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
+		.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+		.subresourceRange = {
+			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+			.baseMipLevel = level,
+			.levelCount = 1,
+			.layerCount = 1,
+		},
+	};
+	vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+		VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+}
+
+static int mip_size(int size, int level) {
+	size >>= level;
+	return size > 0 ? size : 1;
+}
+
+static void blur_dispatch(struct wlr_vk_render_pass *pass, VkDescriptorSet ds,
+		int width, int height, const struct wlr_render_blur_options *options,
+		enum wlr_vk_blur_mode mode) {
+	VkCommandBuffer cb = pass->command_buffer->vk;
+	struct wlr_vk_renderer *renderer = pass->renderer;
+
+	struct wlr_vk_blur_pcr_data pcr = {
+		.halfpixel = { 0.5f / width, 0.5f / height },
+		.offset = options->size,
+		.mode = mode,
+		.contrast = options->contrast,
+		.brightness = options->brightness,
+		.vibrancy = options->vibrancy,
+		.noise = options->noise,
+	};
+	vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, renderer->blur_pipe_layout,
+		0, 1, &ds, 0, NULL);
+	vkCmdPushConstants(cb, renderer->blur_pipe_layout, VK_SHADER_STAGE_COMPUTE_BIT,
+		0, sizeof(pcr), &pcr);
+	vkCmdDispatch(cb, (width + 15) / 16, (height + 15) / 16, 1);
+}
+
+/*
+ * The blend image can't be read inside the render pass, so leave it, run the
+ * blur shader down the mip levels and back up, copy the clip region of the
+ * result into the blend image, and resume the render pass.
+ */
+static void render_pass_add_blur(struct wlr_render_pass *wlr_pass,
+		const struct wlr_render_blur_options *options) {
+	struct wlr_vk_render_pass *pass = get_render_pass(wlr_pass);
+	struct wlr_vk_render_buffer *buffer = pass->render_buffer;
+	VkCommandBuffer cb = pass->command_buffer->vk;
+
+	int clip_rects_len;
+	const pixman_box32_t *clip_rects =
+		pixman_region32_rectangles(options->clip, &clip_rects_len);
+	if (!pass->two_pass || clip_rects_len == 0 || options->passes <= 0) {
+		return;
+	}
+	if (!vulkan_render_buffer_ensure_blur_image(buffer)) {
+		return;
+	}
+
+	int width = buffer->wlr_buffer->width;
+	int height = buffer->wlr_buffer->height;
+	int passes = options->passes;
+	if (passes > WLR_VK_BLUR_MAX_PASSES) {
+		passes = WLR_VK_BLUR_MAX_PASSES;
+	}
+	VkImage blend = buffer->two_pass.blend_image;
+	VkImage blur = buffer->two_pass.blur_image;
+
+	vkCmdNextSubpass(cb, VK_SUBPASS_CONTENTS_INLINE);
+	vkCmdEndRenderPass(cb);
+
+	vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pass->renderer->blur_pipe);
+	for (int i = 0; i <= passes; i++) {
+		blur_image_barrier(cb, blur, i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+	}
+
+	for (int i = 0; i < passes; i++) {
+		if (i > 0) {
+			blur_image_barrier(cb, blur, i, VK_IMAGE_LAYOUT_GENERAL,
+				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		}
+		blur_dispatch(pass, buffer->two_pass.blur_down_ds[i],
+			mip_size(width, i + 1), mip_size(height, i + 1), options,
+			i == 0 ? WLR_VK_BLUR_MODE_FIRST_DOWN : WLR_VK_BLUR_MODE_DOWN);
+	}
+	for (int i = passes - 1; i >= 0; i--) {
+		blur_image_barrier(cb, blur, i + 1, VK_IMAGE_LAYOUT_GENERAL,
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		if (i > 0) {
+			blur_image_barrier(cb, blur, i, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+				VK_IMAGE_LAYOUT_GENERAL);
+		}
+		blur_dispatch(pass, buffer->two_pass.blur_up_ds[i],
+			mip_size(width, i), mip_size(height, i), options,
+			i == 0 ? WLR_VK_BLUR_MODE_LAST_UP : WLR_VK_BLUR_MODE_UP);
+	}
+
+	blur_image_barrier(cb, blur, 0, VK_IMAGE_LAYOUT_GENERAL,
+		VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+	blur_image_barrier(cb, blend, 0, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+	for (int i = 0; i < clip_rects_len; i++) {
+		VkRect2D rect;
+		convert_pixman_box_to_vk_rect(&clip_rects[i], &rect);
+		VkImageCopy copy = {
+			.srcSubresource = {
+				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				.layerCount = 1,
+			},
+			.srcOffset = { rect.offset.x, rect.offset.y, 0 },
+			.dstSubresource = {
+				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				.layerCount = 1,
+			},
+			.dstOffset = { rect.offset.x, rect.offset.y, 0 },
+			.extent = { rect.extent.width, rect.extent.height, 1 },
+		};
+		vkCmdCopyImage(cb, blur, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			blend, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+		render_pass_mark_box_updated(pass, &clip_rects[i]);
+	}
+
+	blur_image_barrier(cb, blend, 0, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+	VkRenderPassBeginInfo rp_info = {
+		.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+		.renderArea = { .extent = { width, height } },
+		.renderPass = pass->render_setup->render_pass,
+		.framebuffer = pass->render_buffer_out->framebuffer,
+	};
+	vkCmdBeginRenderPass(cb, &rp_info, VK_SUBPASS_CONTENTS_INLINE);
+	vkCmdSetViewport(cb, 0, 1, &(VkViewport){
+		.width = width,
+		.height = height,
+		.maxDepth = 1,
+	});
+	pass->bound_pipeline = VK_NULL_HANDLE;
+}
+
 static const struct wlr_render_pass_impl render_pass_impl = {
 	.submit = render_pass_submit,
+	.add_blur = render_pass_add_blur,
 	.add_rect = render_pass_add_rect,
 	.add_texture = render_pass_add_texture,
 	.add_decoration = render_pass_add_decoration,

@@ -245,6 +245,8 @@ struct wlr_vk_render_buffer_out {
 };
 
 // Renderer-internal representation of an wlr_buffer imported for rendering.
+#define WLR_VK_BLUR_MAX_PASSES 6
+
 struct wlr_vk_render_buffer {
 	struct wlr_buffer *wlr_buffer;
 	struct wlr_addon addon;
@@ -283,7 +285,36 @@ struct wlr_vk_render_buffer {
 		VkDescriptorSet blend_descriptor_set;
 		struct wlr_vk_descriptor_pool *blend_attachment_pool;
 		bool blend_transitioned;
+
+		// Mip chain for blur, created on first use. The contents don't outlive
+		// the blur operation.
+		VkImage blur_image;
+		VkDeviceMemory blur_memory;
+		VkImageView blur_views[WLR_VK_BLUR_MAX_PASSES + 1];
+		VkDescriptorPool blur_ds_pool;
+		VkDescriptorSet blur_down_ds[WLR_VK_BLUR_MAX_PASSES]; // writes level i + 1
+		VkDescriptorSet blur_up_ds[WLR_VK_BLUR_MAX_PASSES]; // writes level i
 	} two_pass;
+};
+
+bool vulkan_render_buffer_ensure_blur_image(struct wlr_vk_render_buffer *buffer);
+
+// Matches the defines in blur.comp
+enum wlr_vk_blur_mode {
+	WLR_VK_BLUR_MODE_FIRST_DOWN,
+	WLR_VK_BLUR_MODE_DOWN,
+	WLR_VK_BLUR_MODE_UP,
+	WLR_VK_BLUR_MODE_LAST_UP,
+};
+
+struct wlr_vk_blur_pcr_data {
+	float halfpixel[2];
+	float offset;
+	int32_t mode;
+	float contrast;
+	float brightness;
+	float vibrancy;
+	float noise;
 };
 
 bool vulkan_setup_one_pass_framebuffer(struct wlr_vk_render_buffer *buffer,
@@ -332,6 +363,11 @@ struct wlr_vk_renderer {
 	VkDescriptorSetLayout output_ds_srgb_layout;
 	VkDescriptorSetLayout output_ds_lut3d_layout;
 	VkSampler output_sampler_lut3d;
+
+	VkDescriptorSetLayout blur_ds_layout;
+	VkPipelineLayout blur_pipe_layout;
+	VkPipeline blur_pipe;
+	VkSampler blur_sampler;
 	// descriptor set indicating dummy 1x1x1 image, for use in the lut3d slot
 	VkDescriptorSet output_ds_lut3d_dummy;
 	struct wlr_vk_descriptor_pool *output_ds_lut3d_dummy_pool;

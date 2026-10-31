@@ -234,8 +234,11 @@ void output_configure_scene(struct sway_output *output,
 
 	struct sway_container *con =
 		scene_descriptor_try_get(node, SWAY_SCENE_DESC_CONTAINER);
+	static bool blur = false;
+	bool parent_blur = blur;
 	if (con) {
-		opacity = con->pending.alpha;
+		opacity = con->pending.alpha * con->focus_flash.alpha;
+		blur = con->view != NULL && con->view->blur;
 	}
 
 	if (node->type == WLR_SCENE_NODE_BUFFER) {
@@ -258,6 +261,7 @@ void output_configure_scene(struct sway_output *output,
 		}
 
 		wlr_scene_buffer_set_opacity(buffer, opacity);
+		wlr_scene_buffer_set_blur(buffer, blur);
 	} else if (node->type == WLR_SCENE_NODE_TREE) {
 		struct wlr_scene_tree *tree = wlr_scene_tree_from_node(node);
 		struct wlr_scene_node *node;
@@ -265,18 +269,46 @@ void output_configure_scene(struct sway_output *output,
 			output_configure_scene(output, node, opacity);
 		}
 	}
+	blur = parent_blur;
 }
 
-static bool output_can_tear(struct sway_output *output) {
+static struct sway_container *output_get_fullscreen_container(struct sway_output *output) {
 	struct sway_workspace *workspace = output->current.active_workspace;
 	if (!workspace) {
-		return false;
+		return NULL;
 	}
 
 	struct sway_container *fullscreen_con = root->fullscreen_global;
 	if (!fullscreen_con) {
 		fullscreen_con = workspace->current.fullscreen;
 	}
+	return fullscreen_con;
+}
+
+static void output_update_adaptive_sync(struct sway_output *output,
+		struct wlr_output_state *pending) {
+	struct wlr_output *wlr_output = output->wlr_output;
+	if (!output->adaptive_sync_fullscreen || !wlr_output->adaptive_sync_supported) {
+		return;
+	}
+
+	struct sway_container *con = output_get_fullscreen_container(output);
+	bool enabled = con != NULL && con->view != NULL;
+	bool current = wlr_output->adaptive_sync_status == WLR_OUTPUT_ADAPTIVE_SYNC_ENABLED;
+	if (enabled == current) {
+		return;
+	}
+
+	wlr_output_state_set_adaptive_sync_enabled(pending, enabled);
+	if (!wlr_output_test_state(wlr_output, pending)) {
+		sway_log(SWAY_DEBUG, "Output test failed on '%s', keeping adaptive sync %s",
+			wlr_output->name, current ? "enabled" : "disabled");
+		pending->committed &= ~WLR_OUTPUT_STATE_ADAPTIVE_SYNC_ENABLED;
+	}
+}
+
+static bool output_can_tear(struct sway_output *output) {
+	struct sway_container *fullscreen_con = output_get_fullscreen_container(output);
 	if (fullscreen_con && fullscreen_con->view) {
 		return (output->allow_tearing && view_can_tear(fullscreen_con->view));
 	}
@@ -313,6 +345,8 @@ static int output_repaint_timer_handler(void *data) {
 		wlr_output_state_finish(&pending);
 		return 0;
 	}
+
+	output_update_adaptive_sync(output, &pending);
 
 	if (output_can_tear(output)) {
 		pending.tearing_page_flip = true;

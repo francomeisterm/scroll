@@ -562,6 +562,8 @@ struct sway_config {
 	enum mouse_warping_mode mouse_warping;
 	enum focus_wrapping_mode focus_wrapping;
 	bool workspace_switch_wrapping;
+	float focus_flash_alpha;
+	int focus_flash_duration; // ms, 0 disables it
 	bool active;
 	bool failed;
 	bool reloading;

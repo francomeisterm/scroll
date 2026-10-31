@@ -1,3 +1,4 @@
+#include <stdlib.h>
 #include <wlr/render/allocator.h>
 #include <wlr/render/color.h>
 #include <wlr/render/pass.h>
@@ -5,6 +6,7 @@
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/render/wlr_texture.h>
 #include <wlr/types/wlr_buffer.h>
+#include <wlr/util/addon.h>
 #include <wlr/util/log.h>
 #include "types/wlr_output.h"
 
@@ -31,41 +33,55 @@ bool output_get_sdr_gamut_primaries(const struct wlr_output *output,
 	return true;
 }
 
-/*
- * Undo the SDR gamut boost: the texture pass ends up in sRGB primaries, this
- * maps them back to the SDR values wlr_scene started from. NULL means the
- * default gamma 2.2 encoding is enough.
- */
-static struct wlr_color_transform *create_sdr_gamut_transform(
-		const struct wlr_output *output) {
-	struct wlr_color_primaries sdr_primaries, srgb;
-	if (!output_get_sdr_gamut_primaries(output, &sdr_primaries)) {
-		return NULL;
-	}
-	wlr_color_primaries_from_named(&srgb, WLR_COLOR_NAMED_PRIMARIES_SRGB);
+struct capture_state {
+	struct wlr_addon addon;
+	struct wlr_swapchain *swapchain;
+};
 
-	float matrix[9];
-	wlr_color_primaries_transform_absolute_colorimetric(&srgb, &sdr_primaries, matrix);
+static void capture_state_destroy(struct wlr_addon *addon) {
+	struct capture_state *state = wl_container_of(addon, state, addon);
+	wlr_addon_finish(&state->addon);
+	wlr_swapchain_destroy(state->swapchain);
+	free(state);
+}
 
-	struct wlr_color_transform *transforms[2] = {
-		wlr_color_transform_init_matrix(matrix),
-		wlr_color_transform_init_linear_to_inverse_eotf(WLR_COLOR_TRANSFER_FUNCTION_GAMMA22),
-	};
-	struct wlr_color_transform *pipeline = NULL;
-	if (transforms[0] != NULL && transforms[1] != NULL) {
-		pipeline = wlr_color_transform_init_pipeline(transforms, 2);
+static const struct wlr_addon_interface capture_state_impl = {
+	.name = "wlr_output_capture_state",
+	.destroy = capture_state_destroy,
+};
+
+static struct wlr_swapchain *get_capture_swapchain(struct wlr_output *output, int width, int height) {
+	const struct wlr_drm_format *format = &output->swapchain->format;
+
+	struct capture_state *state = NULL;
+	struct wlr_addon *addon = wlr_addon_find(&output->addons, output, &capture_state_impl);
+	if (addon != NULL) {
+		state = wl_container_of(addon, state, addon);
+		struct wlr_swapchain *swapchain = state->swapchain;
+		if (swapchain != NULL && swapchain->width == width && swapchain->height == height &&
+				swapchain->format.format == format->format &&
+				swapchain->format.len == format->len) {
+			return swapchain;
+		}
+	} else {
+		state = calloc(1, sizeof(*state));
+		if (state == NULL) {
+			return NULL;
+		}
+		wlr_addon_init(&state->addon, &output->addons, output, &capture_state_impl);
 	}
-	wlr_color_transform_unref(transforms[0]);
-	wlr_color_transform_unref(transforms[1]);
-	return pipeline;
+
+	wlr_swapchain_destroy(state->swapchain);
+	state->swapchain = wlr_swapchain_create(output->allocator, width, height, format);
+	return state->swapchain;
 }
 
 /*
  * Capture clients expect SDR pixels, but the buffer of an HDR output holds PQ
  * BT.2020. Convert it the opposite way wlr_scene does when it composites SDR
  * content, so that SDR white comes back as full white. PQ content brighter
- * than the SDR reference clips at white. The gamut boost is a per-texture SDR
- * step that can't be told apart here, so PQ surfaces get undone by it too.
+ * than the SDR reference clips at white. Content wlr_scene gave the SDR gamut
+ * boost gets it undone, except where the output says there is none.
  */
 static struct wlr_buffer *render_sdr_buffer(struct wlr_output *output,
 		struct wlr_buffer *src) {
@@ -93,41 +109,44 @@ static struct wlr_buffer *render_sdr_buffer(struct wlr_output *output,
 
 	// The output's own format, so that the buffer constraints advertised to
 	// capture clients stay valid.
-	struct wlr_buffer *dst = wlr_allocator_create_buffer(output->allocator,
-		src->width, src->height, &output->swapchain->format);
+	struct wlr_swapchain *swapchain = get_capture_swapchain(output, src->width, src->height);
+	struct wlr_buffer *dst = swapchain != NULL ? wlr_swapchain_acquire(swapchain) : NULL;
 	if (dst == NULL) {
-		wlr_log(WLR_DEBUG, "Failed to allocate a buffer for HDR capture");
+		wlr_log(WLR_DEBUG, "Failed to get a buffer for HDR capture");
 		wlr_texture_destroy(texture);
 		return NULL;
 	}
 
 	bool ok = false;
-	struct wlr_color_transform *gamut_transform = create_sdr_gamut_transform(output);
-	// The pass encoding is gamma 2.2, the inverse of how wlr_scene decodes SDR
-	// content.
-	struct wlr_render_pass *pass =
-		wlr_renderer_begin_buffer_pass(output->renderer, dst,
-			&(struct wlr_buffer_pass_options) {
-				.color_transform = gamut_transform,
-			});
+	struct wlr_color_primaries sdr_primaries;
+	bool boosted = output_get_sdr_gamut_primaries(output, &sdr_primaries);
+	// The default pass encoding is gamma 2.2, the inverse of how wlr_scene
+	// decodes SDR content.
+	struct wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(output->renderer, dst, NULL);
 	if (pass != NULL) {
-		wlr_render_pass_add_texture(pass, &(struct wlr_render_texture_options) {
+		struct wlr_render_texture_options options = {
 			.texture = texture,
 			.blend_mode = WLR_RENDER_BLEND_MODE_NONE,
 			.filter_mode = WLR_SCALE_FILTER_NEAREST,
 			.transfer_function = img_desc->transfer_function,
 			.primaries = &primaries,
+			.dst_primaries = boosted ? &sdr_primaries : NULL,
 			.luminance_multiplier = &luminance_multiplier,
-		});
+		};
+		wlr_render_pass_add_texture(pass, &options);
+		if (boosted && !pixman_region32_empty(&output->unboosted_region)) {
+			options.dst_primaries = NULL;
+			options.clip = &output->unboosted_region;
+			wlr_render_pass_add_texture(pass, &options);
+		}
 		ok = wlr_render_pass_submit(pass);
 	}
 
-	wlr_color_transform_unref(gamut_transform);
 	wlr_texture_destroy(texture);
 
 	if (!ok) {
 		wlr_log(WLR_DEBUG, "Failed to render the HDR capture conversion");
-		wlr_buffer_drop(dst);
+		wlr_buffer_unlock(dst);
 		return NULL;
 	}
 	return dst;
@@ -140,14 +159,5 @@ struct wlr_buffer *output_capture_lock_sdr_buffer(struct wlr_output *output,
 			img_desc->transfer_function != WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ) {
 		return wlr_buffer_lock(src);
 	}
-
-	struct wlr_buffer *dst = render_sdr_buffer(output, src);
-	if (dst == NULL) {
-		return NULL;
-	}
-
-	// The lock is now the only reference, unlocking destroys the buffer
-	wlr_buffer_lock(dst);
-	wlr_buffer_drop(dst);
-	return dst;
+	return render_sdr_buffer(output, src);
 }

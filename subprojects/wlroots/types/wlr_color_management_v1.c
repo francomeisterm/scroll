@@ -1069,6 +1069,29 @@ wlr_surface_get_image_description_v1_data(struct wlr_surface *surface) {
 	return &cm_surface->current.image_desc_data;
 }
 
+void wlr_color_manager_v1_notify_preferred_changed(struct wlr_color_manager_v1 *manager) {
+	uint64_t identity = ++manager->last_image_desc_identity;
+	uint32_t identity_hi = identity >> 32;
+	uint32_t identity_lo = (uint32_t)identity;
+
+	struct wlr_color_management_surface_feedback_v1 *surface_feedback;
+	wl_list_for_each(surface_feedback, &manager->surface_feedbacks, link) {
+		uint32_t version = wl_resource_get_version(surface_feedback->resource);
+		if (version >= WP_COLOR_MANAGEMENT_SURFACE_FEEDBACK_V1_PREFERRED_CHANGED2_SINCE_VERSION) {
+			wp_color_management_surface_feedback_v1_send_preferred_changed2(
+				surface_feedback->resource, identity_hi, identity_lo);
+		} else {
+			wp_color_management_surface_feedback_v1_send_preferred_changed(
+				surface_feedback->resource, identity_lo);
+		}
+	}
+
+	struct wlr_color_management_output_v1 *cm_output;
+	wl_list_for_each(cm_output, &manager->outputs, link) {
+		wp_color_management_output_v1_send_image_description_changed(cm_output->resource);
+	}
+}
+
 void wlr_color_manager_v1_set_surface_preferred_image_description(
 		struct wlr_color_manager_v1 *manager, struct wlr_surface *surface,
 		const struct wlr_image_description_v1_data *data) {

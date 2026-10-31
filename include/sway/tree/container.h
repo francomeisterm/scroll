@@ -2,6 +2,7 @@
 #define _SWAY_CONTAINER_H
 #include <stdint.h>
 #include <sys/types.h>
+#include <time.h>
 #include <wlr/types/wlr_compositor.h>
 #include "list.h"
 #include <wlr/types/wlr_scene.h>
@@ -109,6 +110,12 @@ struct sway_container_state {
 };
 
 struct sway_container {
+	struct {
+		struct wl_event_source *timer; // set only while flashing
+		struct timespec start;
+		float alpha; // multiplies the container's opacity
+	} focus_flash;
+
 	struct sway_node node;
 	struct sway_view *view;
 
@@ -233,6 +240,11 @@ struct sway_container *container_create(struct sway_view *view);
 void container_destroy(struct sway_container *con);
 
 void container_begin_destroy(struct sway_container *con);
+
+/**
+ * Briefly dip the opacity of a container that got keyboard focus.
+ */
+void container_focus_flash(struct sway_container *con);
 
 /**
  * Search a container's descendants a container based on test criteria. Returns

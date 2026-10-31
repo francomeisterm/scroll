@@ -161,6 +161,10 @@ struct wlr_scene {
 	struct wlr_linux_dmabuf_v1 *linux_dmabuf_v1;
 	struct wlr_gamma_control_manager_v1 *gamma_control_manager_v1;
 	struct wlr_color_manager_v1 *color_manager_v1;
+	struct {
+		int passes;
+		float size, contrast, brightness, vibrancy, noise;
+	} blur;
 
 	bool restack_xwayland_surfaces;
 
@@ -252,6 +256,11 @@ struct wlr_scene_frame_done_event {
 /** A scene-graph node displaying a buffer */
 struct wlr_scene_buffer {
 	struct wlr_scene_node node;
+
+	// Blur behind all of the translucent part of the buffer
+	bool blur;
+	// Blur behind this region too, in surface-local coordinates
+	pixman_region32_t blur_region;
 
 	// May be NULL
 	struct wlr_buffer *buffer;
@@ -770,6 +779,16 @@ void wlr_scene_buffer_set_transform(struct wlr_scene_buffer *scene_buffer,
 /**
 * Sets the opacity of this buffer
 */
+void wlr_scene_buffer_set_blur(struct wlr_scene_buffer *scene_buffer, bool blur);
+void wlr_scene_buffer_set_blur_region(struct wlr_scene_buffer *scene_buffer,
+	const pixman_region32_t *region);
+/**
+ * Set how many passes wlr_scene blurs with, each one doubles the blur size.
+ */
+void wlr_scene_set_blur_passes(struct wlr_scene *scene, int passes);
+void wlr_scene_set_blur_style(struct wlr_scene *scene, float size, float contrast,
+	float brightness, float vibrancy, float noise);
+
 void wlr_scene_buffer_set_opacity(struct wlr_scene_buffer *scene_buffer,
 	float opacity);
 

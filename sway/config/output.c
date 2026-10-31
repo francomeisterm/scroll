@@ -637,6 +637,7 @@ static void queue_output_config(struct output_config *oc,
 			compute_default_scale(wlr_output, pending));
 	}
 
+	output->adaptive_sync_fullscreen = oc && oc->adaptive_sync == 2;
 	if (wlr_output->adaptive_sync_supported) {
 		if (oc && oc->adaptive_sync != -1) {
 			wlr_output_state_set_adaptive_sync_enabled(pending, oc->adaptive_sync == 1);

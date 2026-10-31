@@ -325,6 +325,7 @@ void wlr_scene_node_destroy(struct wlr_scene_node *node) {
 		scene_buffer_set_buffer(scene_buffer, NULL);
 		scene_buffer_set_texture(scene_buffer, NULL);
 		pixman_region32_fini(&scene_buffer->opaque_region);
+		pixman_region32_fini(&scene_buffer->blur_region);
 		wlr_drm_syncobj_timeline_unref(scene_buffer->wait_timeline);
 
 		assert(wl_list_empty(&scene_buffer->events.outputs_update.listener_list));
@@ -404,6 +405,13 @@ struct wlr_scene *wlr_scene_create(void) {
 	scene->direct_scanout = !env_parse_bool("WLR_SCENE_DISABLE_DIRECT_SCANOUT");
 	scene->calculate_visibility = !env_parse_bool("WLR_SCENE_DISABLE_VISIBILITY");
 	scene->highlight_transparent_region = env_parse_bool("WLR_SCENE_HIGHLIGHT_TRANSPARENT_REGION");
+
+	// Hyprland's defaults
+	scene->blur.size = 5;
+	scene->blur.contrast = 0.8916;
+	scene->blur.brightness = 0.8172;
+	scene->blur.vibrancy = 0.1696;
+	scene->blur.noise = 0.0117;
 
 	return scene;
 }
@@ -1467,6 +1475,7 @@ struct wlr_scene_buffer *wlr_scene_buffer_create(struct wlr_scene_tree *parent,
 	}
 	assert(parent);
 	scene_node_init(&scene_buffer->node, WLR_SCENE_NODE_BUFFER, parent);
+	pixman_region32_init(&scene_buffer->blur_region);
 
 	wl_signal_init(&scene_buffer->events.outputs_update);
 	wl_signal_init(&scene_buffer->events.output_sample);
@@ -1728,6 +1737,41 @@ void wlr_scene_buffer_send_frame_done(struct wlr_scene_buffer *scene_buffer,
 	if (!pixman_region32_empty(&scene_buffer->node.visible)) {
 		wl_signal_emit_mutable(&scene_buffer->events.frame_done, event);
 	}
+}
+
+void wlr_scene_buffer_set_blur(struct wlr_scene_buffer *scene_buffer, bool blur) {
+	if (scene_buffer->blur == blur) {
+		return;
+	}
+	scene_buffer->blur = blur;
+	scene_node_update(&scene_buffer->node, NULL);
+}
+
+void wlr_scene_buffer_set_blur_region(struct wlr_scene_buffer *scene_buffer,
+		const pixman_region32_t *region) {
+	if (pixman_region32_equal(&scene_buffer->blur_region, region)) {
+		return;
+	}
+	pixman_region32_copy(&scene_buffer->blur_region, region);
+	scene_node_update(&scene_buffer->node, NULL);
+}
+
+void wlr_scene_set_blur_passes(struct wlr_scene *scene, int passes) {
+	if (scene->blur.passes == passes) {
+		return;
+	}
+	scene->blur.passes = passes;
+	scene_node_update(&scene->tree.node, NULL);
+}
+
+void wlr_scene_set_blur_style(struct wlr_scene *scene, float size, float contrast,
+		float brightness, float vibrancy, float noise) {
+	scene->blur.size = size;
+	scene->blur.contrast = contrast;
+	scene->blur.brightness = brightness;
+	scene->blur.vibrancy = vibrancy;
+	scene->blur.noise = noise;
+	scene_node_update(&scene->tree.node, NULL);
 }
 
 void wlr_scene_buffer_set_opacity(struct wlr_scene_buffer *scene_buffer,
@@ -2110,6 +2154,140 @@ static bool get_sdr_on_hdr_primaries(const struct wlr_scene_buffer *scene_buffer
 	return output_get_sdr_gamut_primaries(output, out);
 }
 
+static void subtract_rounded_corners(pixman_region32_t *region, const struct wlr_box *box,
+		int radius, bool top) {
+	for (int y = 0; y < radius; y++) {
+		// How far the arc is from the box edge on this row
+		double dy = radius - y - 0.5;
+		int inset = ceil(radius - sqrt(radius * radius - dy * dy));
+		int row = top ? box->y + y : box->y + box->height - 1 - y;
+		pixman_region32_t corners;
+		pixman_region32_init_rect(&corners, box->x, row, inset, 1);
+		pixman_region32_union_rect(&corners, &corners,
+			box->x + box->width - inset, row, inset, 1);
+		pixman_region32_subtract(region, region, &corners);
+		pixman_region32_fini(&corners);
+	}
+}
+
+static void scene_buffer_render_blur(const struct wlr_scene_buffer *scene_buffer,
+		const struct render_data *data, const struct render_list_entry *entry,
+		const pixman_region32_t *render_region, const pixman_region32_t *translucent,
+		const struct wlr_box *dst_box, double scale, int dx, int dy, bool workspace) {
+	int passes = data->output->scene->blur.passes;
+	if (passes <= 0 || scene_buffer->opacity <= 0 ||
+			(!scene_buffer->blur && pixman_region32_empty(&scene_buffer->blur_region))) {
+		return;
+	}
+
+	pixman_region32_t region;
+	pixman_region32_init(&region);
+	if (!pixman_region32_empty(&scene_buffer->blur_region)) {
+		pixman_region32_copy(&region, &scene_buffer->blur_region);
+		pixman_region32_translate(&region, round(entry->x - data->logical.x),
+			round(entry->y - data->logical.y));
+		if (workspace) {
+			scale_region(&region, scale, false);
+			pixman_region32_translate(&region, dx, dy);
+		}
+		logical_to_buffer_coords(&region, data, false);
+		pixman_region32_intersect(&region, &region, render_region);
+	}
+	if (scene_buffer->blur) {
+		pixman_region32_t rounded;
+		pixman_region32_init(&rounded);
+		pixman_region32_copy(&rounded, translucent);
+		double radius_scale = data->scale * scale;
+		subtract_rounded_corners(&rounded, dst_box,
+			round(scene_buffer->radius_top * radius_scale), true);
+		subtract_rounded_corners(&rounded, dst_box,
+			round(scene_buffer->radius_bottom * radius_scale), false);
+		pixman_region32_union(&region, &region, &rounded);
+		pixman_region32_fini(&rounded);
+	}
+
+	if (!pixman_region32_empty(&region)) {
+		wlr_render_pass_add_blur(data->render_pass, &(struct wlr_render_blur_options) {
+			.clip = &region,
+			.passes = passes,
+			.size = data->output->scene->blur.size,
+			.contrast = data->output->scene->blur.contrast,
+			.brightness = data->output->scene->blur.brightness,
+			.vibrancy = data->output->scene->blur.vibrancy,
+			.noise = data->output->scene->blur.noise,
+		});
+	}
+	pixman_region32_fini(&region);
+}
+
+static void update_unboosted_region(struct wlr_scene_node *node, struct wlr_output *output,
+		const pixman_region32_t *region) {
+	// Borders and shadows are drawn over window content, they don't change
+	// what it is
+	if (node->type != WLR_SCENE_NODE_BUFFER) {
+		return;
+	}
+
+	struct wlr_color_primaries primaries;
+	if (get_sdr_on_hdr_primaries(wlr_scene_buffer_from_node(node), output, &primaries)) {
+		pixman_region32_subtract(&output->unboosted_region, &output->unboosted_region, region);
+	} else {
+		pixman_region32_union(&output->unboosted_region, &output->unboosted_region, region);
+	}
+}
+
+/**
+ * A blurred surface is rendered from what's around it and under it. The blend
+ * buffer holds the composited frame there, with everything above the surface
+ * already in it, so all of that has to be rendered again from the bottom.
+ */
+static void expand_damage_for_blur(struct render_list_entry *list, int list_len,
+		struct render_data *data, const struct wlr_buffer *buffer) {
+	const struct wlr_scene *scene = data->output->scene;
+	if (scene->blur.passes <= 0) {
+		return;
+	}
+	int margin = ceil(2 * scene->blur.size * (1 << scene->blur.passes)) + 1;
+
+	// Twice, for blurred surfaces that overlap
+	for (int pass = 0; pass < 2; pass++) {
+		for (int i = 0; i < list_len; i++) {
+			struct wlr_scene_node *node = list[i].node;
+			if (node->type != WLR_SCENE_NODE_BUFFER) {
+				continue;
+			}
+			struct wlr_scene_buffer *scene_buffer = wlr_scene_buffer_from_node(node);
+			if (!scene_buffer->blur && pixman_region32_empty(&scene_buffer->blur_region)) {
+				continue;
+			}
+
+			struct wlr_scene_workspace_data workspace_data;
+			bool workspace = scene_cbs.workspace_data(node, &workspace_data);
+
+			pixman_region32_t region;
+			pixman_region32_init(&region);
+			pixman_region32_copy(&region, &node->visible);
+			pixman_region32_translate(&region, -data->logical.x, -data->logical.y);
+			if (workspace) {
+				scale_region(&region, workspace_data.scale, false);
+				pixman_region32_translate(&region, workspace_data.x, workspace_data.y);
+			}
+			logical_to_buffer_coords(&region, data, true);
+			wlr_region_expand(&region, &region, margin);
+			pixman_region32_intersect_rect(&region, &region, 0, 0, buffer->width, buffer->height);
+
+			pixman_region32_t touched;
+			pixman_region32_init(&touched);
+			pixman_region32_intersect(&touched, &region, &data->damage);
+			if (!pixman_region32_empty(&touched)) {
+				pixman_region32_union(&data->damage, &data->damage, &region);
+			}
+			pixman_region32_fini(&touched);
+			pixman_region32_fini(&region);
+		}
+	}
+}
+
 static void scene_entry_render(struct render_list_entry *entry, const struct render_data *data) {
 	struct wlr_scene_node *node = entry->node;
 
@@ -2137,6 +2315,7 @@ static void scene_entry_render(struct render_list_entry *entry, const struct ren
 		pixman_region32_fini(&render_region);
 		return;
 	}
+	update_unboosted_region(node, data->output->output, &render_region);
 	double x = entry->x - data->logical.x;
 	double y = entry->y - data->logical.y;
 
@@ -2236,6 +2415,9 @@ static void scene_entry_render(struct render_list_entry *entry, const struct ren
 		wlr_color_transfer_function_get_default_luminance(
 			WLR_COLOR_TRANSFER_FUNCTION_SRGB, &srgb_lum);
 		float luminance_multiplier = get_luminance_multiplier(&src_lum, &srgb_lum);
+
+		scene_buffer_render_blur(scene_buffer, data, entry, &render_region, &opaque,
+			&dst_box, scale, dx, dy, workspace);
 
 		bool swap_xy, flip_x, flip_y;
 		query_transform(data->transform, &swap_xy, &flip_x, &flip_y);
@@ -3304,6 +3486,12 @@ bool wlr_scene_output_build_state(struct wlr_scene_output *scene_output,
 	}
 
 	bool scanout = scanout_result == SCANOUT_SUCCESS;
+	if (scanout) {
+		// Only content matching the output scans out, so it has no boost
+		pixman_region32_fini(&output->unboosted_region);
+		pixman_region32_init_rect(&output->unboosted_region, 0, 0,
+			output->width, output->height);
+	}
 	if (scene_output->prev_scanout != scanout) {
 		scene_output->prev_scanout = scanout;
 		wlr_log(WLR_DEBUG, "Direct scan-out %s",
@@ -3378,6 +3566,9 @@ bool wlr_scene_output_build_state(struct wlr_scene_output *scene_output,
 
 	pixman_region32_init(&render_data.damage);
 	wlr_damage_ring_rotate_buffer(&scene_output->damage_ring, buffer,
+		&render_data.damage);
+	expand_damage_for_blur(list_data, list_len, &render_data, buffer);
+	pixman_region32_subtract(&output->unboosted_region, &output->unboosted_region,
 		&render_data.damage);
 
 	pixman_region32_t background;

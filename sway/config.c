@@ -375,6 +375,8 @@ static void config_defaults(struct sway_config *config) {
 	config->mouse_warping = WARP_OUTPUT;
 	config->focus_wrapping = WRAP_NO;
 	config->workspace_switch_wrapping = true;
+	config->focus_flash_alpha = 0.85f;
+	config->focus_flash_duration = 0;
 	config->validating = false;
 	config->reloading = false;
 	config->active = false;

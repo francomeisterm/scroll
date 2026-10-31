@@ -111,6 +111,8 @@ struct wlr_render_texture_options {
 	enum wlr_color_transfer_function transfer_function;
 	/* Primaries describing the color volume of the source texture */
 	const struct wlr_color_primaries *primaries;
+	// Destination primaries of the blend space, sRGB if NULL
+	const struct wlr_color_primaries *dst_primaries;
 	/* Color encoding of the source texture for YCbCr conversion to RGB */
 	enum wlr_color_encoding color_encoding;
 	/* Color range of the source texture */
@@ -217,5 +219,21 @@ struct wlr_render_shadow_options {
  */
 void wlr_render_pass_add_shadow(struct wlr_render_pass *render_pass,
 	const struct wlr_render_shadow_options *options);
+
+struct wlr_render_blur_options {
+	// Region to replace with a blurred copy of what's been rendered so far
+	const pixman_region32_t *clip;
+	// Each pass doubles the blur size
+	int passes;
+	// Sample offset of each pass, in half pixels
+	float size;
+	float contrast, brightness, vibrancy, noise;
+};
+
+/**
+ * Blur what's been rendered so far. Renderers without support leave it as is.
+ */
+void wlr_render_pass_add_blur(struct wlr_render_pass *render_pass,
+	const struct wlr_render_blur_options *options);
 
 #endif

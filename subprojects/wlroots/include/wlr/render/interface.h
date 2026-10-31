@@ -76,6 +76,9 @@ struct wlr_render_pass_impl {
 		const struct wlr_render_decoration_options *options);
 	void (*add_shadow)(struct wlr_render_pass *pass,
 		const struct wlr_render_shadow_options *options);
+	/* May be NULL */
+	void (*add_blur)(struct wlr_render_pass *pass,
+		const struct wlr_render_blur_options *options);
 };
 
 struct wlr_render_timer {

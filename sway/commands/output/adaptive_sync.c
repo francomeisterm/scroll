@@ -12,6 +12,13 @@ struct cmd_results *output_cmd_adaptive_sync(int argc, char **argv) {
 		return cmd_results_new(CMD_INVALID, "Missing adaptive_sync argument");
 	}
 
+	if (strcasecmp(argv[0], "fullscreen") == 0) {
+		config->handler_context.output_config->adaptive_sync = 2;
+		config->handler_context.leftovers.argc = argc - 1;
+		config->handler_context.leftovers.argv = argv + 1;
+		return NULL;
+	}
+
 	bool current_value = true;
 	if (strcasecmp(argv[0], "toggle") == 0) {
 		const char *oc_name = config->handler_context.output_config->name;

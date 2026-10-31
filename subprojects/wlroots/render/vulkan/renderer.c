@@ -28,6 +28,7 @@
 #include "render/vulkan/shaders/decoration.frag.h"
 #include "render/vulkan/shaders/shadow.frag.h"
 #include "render/vulkan/shaders/output.frag.h"
+#include "render/vulkan/shaders/blur.comp.h"
 #include "util/array.h"
 
 // TODO:
@@ -783,6 +784,12 @@ static void destroy_render_buffer(struct wlr_vk_render_buffer *buffer) {
 	finish_render_buffer_out(&buffer->srgb.out, dev);
 
 	finish_render_buffer_out(&buffer->two_pass.out, dev);
+	vkDestroyDescriptorPool(dev, buffer->two_pass.blur_ds_pool, NULL);
+	for (size_t i = 0; i <= WLR_VK_BLUR_MAX_PASSES; i++) {
+		vkDestroyImageView(dev, buffer->two_pass.blur_views[i], NULL);
+	}
+	vkDestroyImage(dev, buffer->two_pass.blur_image, NULL);
+	vkFreeMemory(dev, buffer->two_pass.blur_memory, NULL);
 	vkDestroyImage(dev, buffer->two_pass.blend_image, NULL);
 	vkFreeMemory(dev, buffer->two_pass.blend_memory, NULL);
 	vkDestroyImageView(dev, buffer->two_pass.blend_image_view, NULL);
@@ -808,6 +815,253 @@ static struct wlr_addon_interface render_buffer_addon_impl = {
 	.name = "wlr_vk_render_buffer",
 	.destroy = handle_render_buffer_destroy,
 };
+
+bool vulkan_render_buffer_ensure_blur_image(struct wlr_vk_render_buffer *buffer) {
+	if (buffer->two_pass.blur_image != VK_NULL_HANDLE) {
+		return true;
+	}
+
+	struct wlr_vk_renderer *renderer = buffer->renderer;
+	VkDevice dev = renderer->dev->dev;
+	VkImageCreateInfo img_info = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		.imageType = VK_IMAGE_TYPE_2D,
+		.format = VK_FORMAT_R16G16B16A16_SFLOAT,
+		.mipLevels = WLR_VK_BLUR_MAX_PASSES + 1,
+		.arrayLayers = 1,
+		.samples = VK_SAMPLE_COUNT_1_BIT,
+		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+		.tiling = VK_IMAGE_TILING_OPTIMAL,
+		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+		.extent = (VkExtent3D) { buffer->wlr_buffer->width, buffer->wlr_buffer->height, 1 },
+		.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
+			VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+	};
+	VkImage image;
+	VkResult res = vkCreateImage(dev, &img_info, NULL, &image);
+	if (res != VK_SUCCESS) {
+		wlr_vk_error("vkCreateImage failed", res);
+		return false;
+	}
+
+	VkMemoryRequirements mem_reqs;
+	vkGetImageMemoryRequirements(dev, image, &mem_reqs);
+	int mem_type_index = vulkan_find_mem_type(renderer->dev,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, mem_reqs.memoryTypeBits);
+	if (mem_type_index == -1) {
+		wlr_log(WLR_ERROR, "failed to find suitable vulkan memory type");
+		vkDestroyImage(dev, image, NULL);
+		return false;
+	}
+
+	VkMemoryAllocateInfo mem_info = {
+		.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+		.allocationSize = mem_reqs.size,
+		.memoryTypeIndex = mem_type_index,
+	};
+	VkDeviceMemory memory;
+	res = vkAllocateMemory(dev, &mem_info, NULL, &memory);
+	if (res != VK_SUCCESS) {
+		wlr_vk_error("vkAllocateMemory failed", res);
+		vkDestroyImage(dev, image, NULL);
+		return false;
+	}
+	res = vkBindImageMemory(dev, image, memory, 0);
+	if (res != VK_SUCCESS) {
+		wlr_vk_error("vkBindImageMemory failed", res);
+		vkDestroyImage(dev, image, NULL);
+		vkFreeMemory(dev, memory, NULL);
+		return false;
+	}
+
+	buffer->two_pass.blur_image = image;
+	buffer->two_pass.blur_memory = memory;
+
+	for (uint32_t i = 0; i <= WLR_VK_BLUR_MAX_PASSES; i++) {
+		VkImageViewCreateInfo view_info = {
+			.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+			.image = image,
+			.viewType = VK_IMAGE_VIEW_TYPE_2D,
+			.format = VK_FORMAT_R16G16B16A16_SFLOAT,
+			.subresourceRange = {
+				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				.baseMipLevel = i,
+				.levelCount = 1,
+				.layerCount = 1,
+			},
+		};
+		res = vkCreateImageView(dev, &view_info, NULL, &buffer->two_pass.blur_views[i]);
+		if (res != VK_SUCCESS) {
+			wlr_vk_error("vkCreateImageView failed", res);
+			return false;
+		}
+	}
+
+	VkDescriptorPoolSize pool_sizes[] = {
+		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2 * WLR_VK_BLUR_MAX_PASSES },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2 * WLR_VK_BLUR_MAX_PASSES },
+	};
+	VkDescriptorPoolCreateInfo pool_info = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+		.maxSets = 2 * WLR_VK_BLUR_MAX_PASSES,
+		.poolSizeCount = 2,
+		.pPoolSizes = pool_sizes,
+	};
+	res = vkCreateDescriptorPool(dev, &pool_info, NULL, &buffer->two_pass.blur_ds_pool);
+	if (res != VK_SUCCESS) {
+		wlr_vk_error("vkCreateDescriptorPool failed", res);
+		return false;
+	}
+
+	VkDescriptorSetLayout layouts[2 * WLR_VK_BLUR_MAX_PASSES];
+	VkDescriptorSet sets[2 * WLR_VK_BLUR_MAX_PASSES];
+	for (size_t i = 0; i < 2 * WLR_VK_BLUR_MAX_PASSES; i++) {
+		layouts[i] = renderer->blur_ds_layout;
+	}
+	VkDescriptorSetAllocateInfo alloc_info = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+		.descriptorPool = buffer->two_pass.blur_ds_pool,
+		.descriptorSetCount = 2 * WLR_VK_BLUR_MAX_PASSES,
+		.pSetLayouts = layouts,
+	};
+	res = vkAllocateDescriptorSets(dev, &alloc_info, sets);
+	if (res != VK_SUCCESS) {
+		wlr_vk_error("vkAllocateDescriptorSets failed", res);
+		return false;
+	}
+
+	for (size_t i = 0; i < WLR_VK_BLUR_MAX_PASSES; i++) {
+		buffer->two_pass.blur_down_ds[i] = sets[2 * i];
+		buffer->two_pass.blur_up_ds[i] = sets[2 * i + 1];
+
+		VkDescriptorImageInfo down_src = {
+			.sampler = renderer->blur_sampler,
+			.imageView = i == 0 ? buffer->two_pass.blend_image_view :
+				buffer->two_pass.blur_views[i],
+			.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		};
+		VkDescriptorImageInfo down_dst = {
+			.imageView = buffer->two_pass.blur_views[i + 1],
+			.imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+		};
+		VkDescriptorImageInfo up_src = {
+			.sampler = renderer->blur_sampler,
+			.imageView = buffer->two_pass.blur_views[i + 1],
+			.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		};
+		VkDescriptorImageInfo up_dst = {
+			.imageView = buffer->two_pass.blur_views[i],
+			.imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+		};
+		VkWriteDescriptorSet writes[4];
+		for (size_t j = 0; j < 4; j++) {
+			writes[j] = (VkWriteDescriptorSet){
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.dstSet = j < 2 ? buffer->two_pass.blur_down_ds[i] : buffer->two_pass.blur_up_ds[i],
+				.dstBinding = j % 2,
+				.descriptorCount = 1,
+				.descriptorType = j % 2 == 0 ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER :
+					VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			};
+		}
+		writes[0].pImageInfo = &down_src;
+		writes[1].pImageInfo = &down_dst;
+		writes[2].pImageInfo = &up_src;
+		writes[3].pImageInfo = &up_dst;
+		vkUpdateDescriptorSets(dev, 4, writes, 0, NULL);
+	}
+	return true;
+}
+
+static bool init_blur_pipeline(struct wlr_vk_renderer *renderer) {
+	VkDevice dev = renderer->dev->dev;
+
+	VkSamplerCreateInfo sampler_info = {
+		.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+		.magFilter = VK_FILTER_LINEAR,
+		.minFilter = VK_FILTER_LINEAR,
+		.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+		.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+		.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+	};
+	VkResult res = vkCreateSampler(dev, &sampler_info, NULL, &renderer->blur_sampler);
+	if (res != VK_SUCCESS) {
+		wlr_vk_error("vkCreateSampler", res);
+		return false;
+	}
+
+	VkDescriptorSetLayoutBinding bindings[] = {
+		{
+			.binding = 0,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+		},
+		{
+			.binding = 1,
+			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+		},
+	};
+	VkDescriptorSetLayoutCreateInfo ds_info = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+		.bindingCount = 2,
+		.pBindings = bindings,
+	};
+	res = vkCreateDescriptorSetLayout(dev, &ds_info, NULL, &renderer->blur_ds_layout);
+	if (res != VK_SUCCESS) {
+		wlr_vk_error("vkCreateDescriptorSetLayout", res);
+		return false;
+	}
+
+	VkPushConstantRange push_range = {
+		.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+		.size = sizeof(struct wlr_vk_blur_pcr_data),
+	};
+	VkPipelineLayoutCreateInfo layout_info = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+		.setLayoutCount = 1,
+		.pSetLayouts = &renderer->blur_ds_layout,
+		.pushConstantRangeCount = 1,
+		.pPushConstantRanges = &push_range,
+	};
+	res = vkCreatePipelineLayout(dev, &layout_info, NULL, &renderer->blur_pipe_layout);
+	if (res != VK_SUCCESS) {
+		wlr_vk_error("vkCreatePipelineLayout", res);
+		return false;
+	}
+
+	VkShaderModuleCreateInfo module_info = {
+		.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+		.codeSize = sizeof(blur_comp_data),
+		.pCode = blur_comp_data,
+	};
+	VkShaderModule module;
+	res = vkCreateShaderModule(dev, &module_info, NULL, &module);
+	if (res != VK_SUCCESS) {
+		wlr_vk_error("vkCreateShaderModule", res);
+		return false;
+	}
+
+	VkComputePipelineCreateInfo pipe_info = {
+		.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+		.stage = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+			.stage = VK_SHADER_STAGE_COMPUTE_BIT,
+			.module = module,
+			.pName = "main",
+		},
+		.layout = renderer->blur_pipe_layout,
+	};
+	res = vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &pipe_info, NULL, &renderer->blur_pipe);
+	vkDestroyShaderModule(dev, module, NULL);
+	if (res != VK_SUCCESS) {
+		wlr_vk_error("vkCreateComputePipelines", res);
+		return false;
+	}
+	return true;
+}
 
 bool vulkan_setup_two_pass_framebuffer(struct wlr_vk_render_buffer *buffer,
 		const struct wlr_dmabuf_attributes *dmabuf) {
@@ -862,7 +1116,8 @@ bool vulkan_setup_two_pass_framebuffer(struct wlr_vk_render_buffer *buffer,
 		.tiling = VK_IMAGE_TILING_OPTIMAL,
 		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
 		.extent = (VkExtent3D) { dmabuf->width, dmabuf->height, 1 },
-		.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT,
+		.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT |
+			VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
 	};
 
 	res = vkCreateImage(dev, &img_info, NULL, &buffer->two_pass.blend_image);
@@ -1344,6 +1599,10 @@ static void vulkan_destroy(struct wlr_renderer *wlr_renderer) {
 
 	vkDestroyShaderModule(dev->dev, renderer->vert_module, NULL);
 	vkDestroyShaderModule(dev->dev, renderer->tex_frag_module, NULL);
+	vkDestroyPipeline(dev->dev, renderer->blur_pipe, NULL);
+	vkDestroyPipelineLayout(dev->dev, renderer->blur_pipe_layout, NULL);
+	vkDestroyDescriptorSetLayout(dev->dev, renderer->blur_ds_layout, NULL);
+	vkDestroySampler(dev->dev, renderer->blur_sampler, NULL);
 	vkDestroyShaderModule(dev->dev, renderer->quad_frag_module, NULL);
 	vkDestroyShaderModule(dev->dev, renderer->deco_frag_module, NULL);
 	vkDestroyShaderModule(dev->dev, renderer->output_module, NULL);
@@ -3030,6 +3289,10 @@ struct wlr_renderer *vulkan_renderer_create_for_device(struct wlr_vk_device *dev
 	uint64_t cap_syncobj_timeline;
 	if (dev->drm_fd >= 0 && drmGetCap(dev->drm_fd, DRM_CAP_SYNCOBJ_TIMELINE, &cap_syncobj_timeline) == 0) {
 		renderer->wlr_renderer.features.timeline = dev->sync_file_import_export && cap_syncobj_timeline != 0;
+	}
+
+	if (!init_blur_pipeline(renderer)) {
+		goto error;
 	}
 
 	if (!init_static_render_data(renderer)) {

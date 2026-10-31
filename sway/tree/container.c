@@ -141,6 +141,7 @@ struct sway_container *container_create(struct sway_view *view) {
 	}
 	c->current.alpha = c->pending.alpha = 1.0f;
 	container_init_animation_variables(c);
+	c->focus_flash.alpha = 1.0f;
 	c->marks = create_list();
 	c->toggle_size.single = false;
 	c->toggle_size.state = TOGGLE_STATE_NONE;
@@ -581,7 +582,53 @@ static void container_dereference_from_layouts(struct sway_container *con) {
 	}
 }
 
+static void container_end_focus_flash(struct sway_container *con) {
+	if (con->focus_flash.timer != NULL) {
+		wl_event_source_remove(con->focus_flash.timer);
+		con->focus_flash.timer = NULL;
+	}
+	con->focus_flash.alpha = 1.0f;
+}
+
+static int focus_flash_handle_timer(void *data) {
+	struct sway_container *con = data;
+
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	double elapsed = (now.tv_sec - con->focus_flash.start.tv_sec) * 1000.0 +
+		(now.tv_nsec - con->focus_flash.start.tv_nsec) / 1000000.0;
+
+	if (elapsed >= config->focus_flash_duration || config->focus_flash_duration == 0) {
+		container_end_focus_flash(con);
+	} else {
+		// Dip to the configured opacity and back
+		double dip = sin(3.14159265358979 * elapsed / config->focus_flash_duration);
+		con->focus_flash.alpha = 1.0f - (1.0f - config->focus_flash_alpha) * dip;
+		wl_event_source_timer_update(con->focus_flash.timer, 8);
+	}
+	output_configure_scene(NULL, &con->scene_tree->node, 1.0f);
+	return 0;
+}
+
+void container_focus_flash(struct sway_container *con) {
+	if (config->focus_flash_duration == 0 || con->view == NULL ||
+			con->pending.fullscreen_mode != FULLSCREEN_NONE ||
+			container_is_floating(con)) {
+		return;
+	}
+	if (con->focus_flash.timer == NULL) {
+		con->focus_flash.timer = wl_event_loop_add_timer(server.wl_event_loop,
+			focus_flash_handle_timer, con);
+		if (con->focus_flash.timer == NULL) {
+			return;
+		}
+	}
+	clock_gettime(CLOCK_MONOTONIC, &con->focus_flash.start);
+	wl_event_source_timer_update(con->focus_flash.timer, 1);
+}
+
 void container_begin_destroy(struct sway_container *con) {
+	container_end_focus_flash(con);
 	if (con->view) {
 		ipc_event_window(con, "close");
 	}

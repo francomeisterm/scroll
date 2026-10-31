@@ -5,6 +5,7 @@ vulkan_shaders_src = [
 	'decoration.frag',
 	'shadow.frag',
 	'output.frag',
+	'blur.comp',
 ]
 
 vulkan_shaders = []
