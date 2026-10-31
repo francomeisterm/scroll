@@ -421,6 +421,26 @@ void wlr_color_primaries_transform_absolute_colorimetric(
 	wlr_matrix_multiply(matrix, xyz_to_destination, source_to_xyz);
 }
 
+static float pq_reference_luminance = 203;
+
+void wlr_color_set_pq_reference_luminance(float nits) {
+	pq_reference_luminance = nits;
+}
+
+float wlr_color_get_pq_reference_luminance(void) {
+	return pq_reference_luminance;
+}
+
+static float sdr_gamut_wideness = 1;
+
+void wlr_color_set_sdr_gamut_wideness(float wideness) {
+	sdr_gamut_wideness = wideness;
+}
+
+float wlr_color_get_sdr_gamut_wideness(void) {
+	return sdr_gamut_wideness;
+}
+
 void wlr_color_transfer_function_get_default_luminance(enum wlr_color_transfer_function tf,
 		struct wlr_color_luminances *lum) {
 	switch (tf) {
@@ -428,7 +448,7 @@ void wlr_color_transfer_function_get_default_luminance(enum wlr_color_transfer_f
 		*lum = (struct wlr_color_luminances){
 			.min = 0.005,
 			.max = 10000,
-			.reference = 203,
+			.reference = pq_reference_luminance,
 		};
 		break;
 	case WLR_COLOR_TRANSFER_FUNCTION_BT1886:

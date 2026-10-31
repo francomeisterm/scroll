@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Scroll (uwsm-managed)
+Comment=Scroll test session
+Exec=uwsm start -e -D scroll:wlroots -N Scroll -- /home/furansi/.local/bin/scroll
+TryExec=uwsm
+DesktopNames=scroll;wlroots
+Type=Application

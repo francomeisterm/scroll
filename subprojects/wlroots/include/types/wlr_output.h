@@ -27,6 +27,22 @@ bool output_cursor_set_buffer_scaled(struct wlr_output_cursor *cursor,
 	struct wlr_buffer *buffer, int32_t hotspot_x, int32_t hotspot_y,
 	float image_scale);
 
+/**
+ * Get the primaries SDR content is composited with on an HDR (PQ) output, as
+ * set by wlr_color_set_sdr_gamut_wideness(). Returns false if SDR content
+ * keeps its sRGB primaries.
+ */
+bool output_get_sdr_gamut_primaries(const struct wlr_output *output,
+	struct wlr_color_primaries *out);
+
+/**
+ * Get a buffer to hand to capture clients for a committed output buffer. On an
+ * HDR (PQ) output this is a new buffer converted to SDR, otherwise it's the
+ * source buffer. Returns a locked buffer, or NULL on failure.
+ */
+struct wlr_buffer *output_capture_lock_sdr_buffer(struct wlr_output *output,
+	struct wlr_buffer *src);
+
 bool output_cursor_refresh_color_transform(struct wlr_output_cursor *cursor,
 	const struct wlr_output_image_description *img_desc);
 

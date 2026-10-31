@@ -79,12 +79,19 @@ static void get_surface_preferred_image_description(struct wlr_surface *surface,
 		.primaries = WLR_COLOR_NAMED_PRIMARIES_SRGB,
 	};
 
+	const struct wlr_output *target_output = NULL;
+
 	struct wlr_surface_output *surface_output;
 	wl_list_for_each(surface_output, &surface->current_outputs, link) {
 		const struct wlr_output_image_description *img_desc =
 			surface_output->output->image_description;
 		if (img_desc == NULL) {
 			continue;
+		}
+		if (img_desc->transfer_function == WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ &&
+				(target_output == NULL || surface_output->output->hdr_target_luminance.max >
+					target_output->hdr_target_luminance.max)) {
+			target_output = surface_output->output;
 		}
 		if (get_tf_preference(preferred.transfer_function) < get_tf_preference(img_desc->transfer_function)) {
 			preferred.transfer_function = img_desc->transfer_function;
@@ -98,6 +105,10 @@ static void get_surface_preferred_image_description(struct wlr_surface *surface,
 		.tf_named = wlr_color_manager_v1_transfer_function_from_wlr(preferred.transfer_function),
 		.primaries_named = wlr_color_manager_v1_primaries_from_wlr(preferred.primaries),
 	};
+	if (preferred.transfer_function == WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ &&
+			target_output != NULL) {
+		wlr_image_description_v1_data_set_output_target(out, target_output);
+	}
 }
 
 static void handle_scene_buffer_outputs_update(

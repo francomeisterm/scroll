@@ -286,4 +286,19 @@ bool wlr_color_transform_compose(struct wlr_color_transform **result,
 void wlr_color_transfer_function_get_default_luminance(enum wlr_color_transfer_function tf,
 	struct wlr_color_luminances *lum);
 
+/**
+ * Set the reference (SDR white) luminance used for PQ, in nits. The default is
+ * 203. Outputs must be re-rendered for a change to take effect.
+ */
+void wlr_color_set_pq_reference_luminance(float nits);
+float wlr_color_get_pq_reference_luminance(void);
+
+/**
+ * Set how far SDR content on an HDR output is stretched from sRGB primaries
+ * towards the display's native ones, from 0 (accurate) to 1 (native). The
+ * default is 1. Outputs must be re-rendered for a change to take effect.
+ */
+void wlr_color_set_sdr_gamut_wideness(float wideness);
+float wlr_color_get_sdr_gamut_wideness(void);
+
 #endif

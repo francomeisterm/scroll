@@ -8,6 +8,7 @@
 #include <wlr/types/wlr_output.h>
 #include <wlr/util/addon.h>
 #include "ext-image-capture-source-v1-protocol.h"
+#include "types/wlr_output.h"
 
 #define OUTPUT_IMAGE_SOURCE_MANAGER_V1_VERSION 1
 
@@ -95,11 +96,20 @@ static void output_source_copy_frame(struct wlr_ext_image_capture_source_v1 *bas
 	struct wlr_ext_output_image_capture_source_v1_frame_event *event =
 		wl_container_of(base_event, event, base);
 
+	struct wlr_buffer *buffer =
+		output_capture_lock_sdr_buffer(source->output, event->buffer);
+	if (buffer == NULL) {
+		wlr_ext_image_copy_capture_frame_v1_fail(frame,
+			EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_UNKNOWN);
+		return;
+	}
+
 	if (wlr_ext_image_copy_capture_frame_v1_copy_buffer(frame,
-			event->buffer, source->output->renderer)) {
+			buffer, source->output->renderer)) {
 		wlr_ext_image_copy_capture_frame_v1_ready(frame,
 			source->output->transform, &event->when);
 	}
+	wlr_buffer_unlock(buffer);
 }
 
 static struct wlr_ext_image_capture_source_v1_cursor *output_source_get_pointer_cursor(

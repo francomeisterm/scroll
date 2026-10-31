@@ -346,6 +346,7 @@ struct wlr_scene_output {
 		struct wlr_color_transform *prev_gamma_lut_color_transform;
 		struct wlr_color_transform *prev_supplied_color_transform;
 		struct wlr_color_transform *combined_color_transform;
+		float prev_pq_reference_luminance;
 
 		struct wl_listener output_commit;
 		struct wl_listener output_damage;
@@ -834,6 +835,10 @@ struct wlr_scene_output_state_options {
  * Returns true if scene wants to render a new frame. False, if no new frame
  * is needed and an output commit can be skipped for the current frame.
  */
+/**
+ * Damage the whole output, so its next frame is fully re-rendered.
+ */
+void wlr_scene_output_damage_whole(struct wlr_scene_output *scene_output);
 bool wlr_scene_output_needs_frame(struct wlr_scene_output *scene_output);
 
 /**

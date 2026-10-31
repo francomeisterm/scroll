@@ -2086,6 +2086,30 @@ static float get_luminance_multiplier(const struct wlr_color_luminances *src_lum
 	return (dst_lum->reference / src_lum->reference) * (src_lum->max / dst_lum->max);
 }
 
+/**
+ * Like gamescope, interpret SDR content on an HDR output as having the display's
+ * native primaries instead of sRGB ones. It's a saturation boost, not accuracy.
+ * HDR content is left alone. Returns false if the content should be rendered as-is.
+ */
+static bool get_sdr_on_hdr_primaries(const struct wlr_scene_buffer *scene_buffer,
+		const struct wlr_output *output, struct wlr_color_primaries *out) {
+	switch (scene_buffer->transfer_function) {
+	case 0:
+	case WLR_COLOR_TRANSFER_FUNCTION_SRGB:
+	case WLR_COLOR_TRANSFER_FUNCTION_GAMMA22:
+	case WLR_COLOR_TRANSFER_FUNCTION_BT1886:
+		break;
+	default:
+		return false;
+	}
+	if (scene_buffer->primaries != 0 &&
+			scene_buffer->primaries != WLR_COLOR_NAMED_PRIMARIES_SRGB) {
+		return false;
+	}
+
+	return output_get_sdr_gamut_primaries(output, out);
+}
+
 static void scene_entry_render(struct render_list_entry *entry, const struct render_data *data) {
 	struct wlr_scene_node *node = entry->node;
 
@@ -2198,8 +2222,12 @@ static void scene_entry_render(struct render_list_entry *entry, const struct ren
 		transform = wlr_output_transform_compose(transform, data->transform);
 
 		struct wlr_color_primaries primaries = {0};
-		if (scene_buffer->primaries != 0) {
+		bool has_primaries = false;
+		if (get_sdr_on_hdr_primaries(scene_buffer, data->output->output, &primaries)) {
+			has_primaries = true;
+		} else if (scene_buffer->primaries != 0) {
 			wlr_color_primaries_from_named(&primaries, scene_buffer->primaries);
+			has_primaries = true;
 		}
 
 		struct wlr_color_luminances src_lum, srgb_lum;
@@ -2228,7 +2256,7 @@ static void scene_entry_render(struct render_list_entry *entry, const struct ren
 					!pixman_region32_empty(&opaque) ?
 				WLR_RENDER_BLEND_MODE_PREMULTIPLIED : WLR_RENDER_BLEND_MODE_NONE,
 			.transfer_function = scene_buffer->transfer_function,
-			.primaries = scene_buffer->primaries != 0 ? &primaries : NULL,
+			.primaries = has_primaries ? &primaries : NULL,
 			.color_encoding = scene_buffer->color_encoding,
 			.color_range = scene_buffer->color_range,
 			.luminance_multiplier = &luminance_multiplier,
@@ -2983,6 +3011,10 @@ static enum scene_direct_scanout_result scene_entry_try_direct_scanout(
 	return SCANOUT_SUCCESS;
 }
 
+void wlr_scene_output_damage_whole(struct wlr_scene_output *scene_output) {
+	scene_output_damage_whole(scene_output);
+}
+
 bool wlr_scene_output_needs_frame(struct wlr_scene_output *scene_output) {
 	return scene_output->output->needs_frame ||
 		!pixman_region32_empty(&scene_output->pending_commit_damage) ||
@@ -3106,6 +3138,7 @@ static bool scene_output_combine_color_transforms(
 	scene_output->prev_supplied_color_transform = supplied ? wlr_color_transform_ref(supplied) : NULL;
 	wlr_color_transform_unref(scene_output->combined_color_transform);
 	scene_output->combined_color_transform = combined;
+	scene_output->prev_pq_reference_luminance = wlr_color_get_pq_reference_luminance();
 
 	result = true;
 
@@ -3317,6 +3350,7 @@ bool wlr_scene_output_build_state(struct wlr_scene_output *scene_output,
 	if ((render_gamma_lut
 			&& scene_output->gamma_lut_color_transform != scene_output->prev_gamma_lut_color_transform)
 			|| scene_output->prev_supplied_color_transform != options->color_transform
+			|| scene_output->prev_pq_reference_luminance != wlr_color_get_pq_reference_luminance()
 			|| (state->committed & WLR_OUTPUT_STATE_IMAGE_DESCRIPTION)) {
 		const struct wlr_output_image_description *output_description =
 			output_pending_image_description(output, state);

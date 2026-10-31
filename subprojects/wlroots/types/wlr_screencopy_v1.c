@@ -13,6 +13,7 @@
 #include "wlr-screencopy-unstable-v1-protocol.h"
 #include "render/pixel_format.h"
 #include "render/wlr_renderer.h"
+#include "types/wlr_output.h"
 
 #define SCREENCOPY_MANAGER_VERSION 3
 
@@ -317,19 +318,25 @@ static void frame_handle_output_commit(struct wl_listener *listener,
 		goto err;
 	}
 
+	struct wlr_buffer *capture_buffer = output_capture_lock_sdr_buffer(output, src_buffer);
+	if (capture_buffer == NULL) {
+		goto err;
+	}
+
+	bool ok;
 	switch (frame->buffer_cap) {
 	case WLR_BUFFER_CAP_DMABUF:
-		if (!frame_dma_copy(frame, src_buffer)) {
-			goto err;
-		}
+		ok = frame_dma_copy(frame, capture_buffer);
 		break;
 	case WLR_BUFFER_CAP_DATA_PTR:
-		if (!frame_shm_copy(frame, src_buffer)) {
-			goto err;
-		}
+		ok = frame_shm_copy(frame, capture_buffer);
 		break;
 	default:
 		abort(); // unreachable
+	}
+	wlr_buffer_unlock(capture_buffer);
+	if (!ok) {
+		goto err;
 	}
 
 	zwlr_screencopy_frame_v1_send_flags(frame->resource, 0);

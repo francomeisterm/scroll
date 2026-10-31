@@ -436,10 +436,20 @@ static void set_hdr(struct wlr_output *output, struct wlr_output_state *pending,
 	}
 
 	sway_log(SWAY_DEBUG, "Enabling HDR on output %s", output->name);
-	const struct wlr_output_image_description image_desc = {
+	struct wlr_output_image_description image_desc = {
 		.primaries = WLR_COLOR_NAMED_PRIMARIES_BT2020,
 		.transfer_function = WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ,
 	};
+	// Same defaults as gamescope: describe the display itself, and use the max
+	// frame-average for every level so it doesn't over-tonemap SDR content.
+	float max_fall = output->hdr_target_luminance.max_frame_average;
+	if (output->default_primaries != NULL && max_fall > 0) {
+		image_desc.mastering_display_primaries = *output->default_primaries;
+		image_desc.mastering_luminance.min = output->hdr_target_luminance.min;
+		image_desc.mastering_luminance.max = max_fall;
+		image_desc.max_cll = max_fall;
+		image_desc.max_fall = max_fall;
+	}
 	wlr_output_state_set_image_description(pending, &image_desc);
 }
 

@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -167,9 +168,21 @@ static void image_desc_handle_get_information(struct wl_client *client,
 		encode_cie1931_coord(primaries.green.x), encode_cie1931_coord(primaries.green.y),
 		encode_cie1931_coord(primaries.blue.x), encode_cie1931_coord(primaries.blue.y),
 		encode_cie1931_coord(primaries.white.x), encode_cie1931_coord(primaries.white.y));
+	float target_min = luminances.min, target_max = luminances.max;
+	if (image_desc->data.has_mastering_luminance) {
+		target_min = image_desc->data.mastering_luminance.min;
+		// With SDR white above the display's peak there's no HDR headroom. Don't
+		// report a peak below the reference.
+		target_max = fmaxf(image_desc->data.mastering_luminance.max, luminances.reference);
+	}
 	wp_image_description_info_v1_send_target_luminance(resource,
-		round(luminances.min * 10000), round(luminances.max));
-	// TODO: send target_max_cll and target_max_fall
+		round(target_min * 10000), round(target_max));
+	if (image_desc->data.max_cll != 0) {
+		wp_image_description_info_v1_send_target_max_cll(resource, image_desc->data.max_cll);
+	}
+	if (image_desc->data.max_fall != 0) {
+		wp_image_description_info_v1_send_target_max_fall(resource, image_desc->data.max_fall);
+	}
 	wp_image_description_info_v1_send_done(resource);
 	wl_resource_destroy(resource);
 }
@@ -245,6 +258,18 @@ static void image_desc_create_failed(struct wl_resource *parent_resource, uint32
 	wp_image_description_v1_send_failed(resource, cause, msg);
 }
 
+void wlr_image_description_v1_data_set_output_target(
+		struct wlr_image_description_v1_data *data, const struct wlr_output *output) {
+	if (output->hdr_target_luminance.max <= output->hdr_target_luminance.min) {
+		return;
+	}
+	data->has_mastering_luminance = true;
+	data->mastering_luminance.min = output->hdr_target_luminance.min;
+	data->mastering_luminance.max = output->hdr_target_luminance.max;
+	data->max_cll = round(output->hdr_target_luminance.max);
+	data->max_fall = round(output->hdr_target_luminance.max_frame_average);
+}
+
 static const struct wp_color_management_output_v1_interface cm_output_impl;
 
 static struct wlr_color_management_output_v1 *cm_output_from_resource(struct wl_resource *resource) {
@@ -270,6 +295,9 @@ static void cm_output_handle_get_image_description(struct wl_client *client,
 	if (image_desc != NULL) {
 		data.tf_named = wlr_color_manager_v1_transfer_function_from_wlr(image_desc->transfer_function);
 		data.primaries_named = wlr_color_manager_v1_primaries_from_wlr(image_desc->primaries);
+		if (image_desc->transfer_function == WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ) {
+			wlr_image_description_v1_data_set_output_target(&data, cm_output->output);
+		}
 	}
 	image_desc_create_ready(cm_output->manager, cm_output_resource, id, &data, true);
 }

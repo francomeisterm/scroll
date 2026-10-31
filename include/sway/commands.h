@@ -218,6 +218,8 @@ sway_cmd cmd_seamless_mouse;
 sway_cmd cmd_selection;
 sway_cmd cmd_send_shortcut;
 sway_cmd cmd_set;
+sway_cmd cmd_sdr_nits;
+sway_cmd cmd_sdr_gamut;
 sway_cmd cmd_set_size;
 sway_cmd cmd_set_mode;
 sway_cmd cmd_shortcuts_inhibitor;

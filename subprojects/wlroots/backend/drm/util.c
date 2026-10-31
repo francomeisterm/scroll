@@ -104,6 +104,10 @@ void parse_edid(struct wlr_drm_connector *conn, size_t len, const uint8_t *data)
 	const struct di_hdr_static_metadata *hdr_static_metadata = di_info_get_hdr_static_metadata(info);
 	if (conn->props.hdr_output_metadata != 0 && hdr_static_metadata->type1 && hdr_static_metadata->pq && !is_legacy) {
 		output->supported_transfer_functions |= WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ;
+		output->hdr_target_luminance.min = hdr_static_metadata->desired_content_min_luminance;
+		output->hdr_target_luminance.max = hdr_static_metadata->desired_content_max_luminance;
+		output->hdr_target_luminance.max_frame_average =
+			hdr_static_metadata->desired_content_max_frame_avg_luminance;
 	}
 
 	di_info_destroy(info);

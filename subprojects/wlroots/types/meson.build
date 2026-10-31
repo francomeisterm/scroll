@@ -7,6 +7,7 @@ wlr_files += files(
 	'ext_image_capture_source_v1/output.c',
 	'ext_image_capture_source_v1/foreign_toplevel.c',
 	'ext_image_capture_source_v1/scene.c',
+	'output/capture.c',
 	'output/cursor.c',
 	'output/output.c',
 	'output/render.c',

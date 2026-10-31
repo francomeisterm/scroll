@@ -14,6 +14,8 @@
 
 #include <wlr/render/color.h>
 
+struct wlr_output;
+
 struct wlr_renderer;
 struct wlr_surface;
 
@@ -31,6 +33,13 @@ struct wlr_image_description_v1_data {
 
 	uint32_t max_cll, max_fall; // cd/m², zero if unset
 };
+
+/**
+ * Fill the target luminance of an image description from an output's EDID.
+ * Does nothing if the output doesn't report one.
+ */
+void wlr_image_description_v1_data_set_output_target(
+	struct wlr_image_description_v1_data *data, const struct wlr_output *output);
 
 struct wlr_color_manager_v1_features {
 	bool icc_v2_v4;
