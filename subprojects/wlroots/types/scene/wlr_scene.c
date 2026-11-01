@@ -2225,6 +2225,44 @@ static void scene_buffer_render_blur(const struct wlr_scene_buffer *scene_buffer
 	pixman_region32_fini(&region);
 }
 
+/*
+ * The shadow is a full rounded box under the window. Translucent windows would
+ * show it, so only render the part outside of the window.
+ */
+static void scene_shadow_clip_window(pixman_region32_t *region,
+		const struct wlr_scene_shadow *shadow, const struct render_data *data,
+		const struct render_list_entry *entry, double scale, int dx, int dy,
+		bool workspace, int radius_top, int radius_bottom) {
+	const struct wlr_scene_decoration *decoration = shadow->decoration;
+	// They are siblings
+	struct wlr_fbox fbox = {
+		.x = entry->x - data->logical.x + decoration->node.x - shadow->node.x,
+		.y = entry->y - data->logical.y + decoration->node.y - shadow->node.y,
+		.width = decoration->width,
+		.height = decoration->height,
+	};
+	if (workspace) {
+		fbox.x = ceil(fbox.x * scale + dx);
+		fbox.y = ceil(fbox.y * scale + dy);
+		fbox.width = ceil(fbox.width * scale);
+		fbox.height = ceil(fbox.height * scale);
+	}
+	transform_output_box(&fbox, data);
+	struct wlr_box box = {
+		.x = round(fbox.x),
+		.y = round(fbox.y),
+		.width = round(fbox.width),
+		.height = round(fbox.height),
+	};
+
+	pixman_region32_t window;
+	pixman_region32_init_rect(&window, box.x, box.y, box.width, box.height);
+	subtract_rounded_corners(&window, &box, radius_top, true);
+	subtract_rounded_corners(&window, &box, radius_bottom, false);
+	pixman_region32_subtract(region, region, &window);
+	pixman_region32_fini(&window);
+}
+
 static void update_unboosted_region(struct wlr_scene_node *node, struct wlr_output *output,
 		const pixman_region32_t *region) {
 	// Borders and shadows are drawn over window content, they don't change
@@ -2533,6 +2571,15 @@ static void scene_entry_render(struct render_list_entry *entry, const struct ren
 			data->output->output->renderer);
 		bool swap_xy, flip_x, flip_y;
 		query_transform(data->transform, &swap_xy, &flip_x, &flip_y);
+		int radius_top = round((scene_shadow->decoration->title_bar ?
+			scene_shadow->decoration->title_bar_border_radius :
+			scene_shadow->decoration->border_radius) * data->scale * scale);
+		int radius_bottom = round(scene_shadow->decoration->border_radius * data->scale * scale);
+		scene_shadow_clip_window(&render_region, scene_shadow, data, entry, scale, dx, dy,
+			workspace, radius_top, radius_bottom);
+		if (pixman_region32_empty(&render_region)) {
+			break;
+		}
 		wlr_render_pass_add_shadow(data->render_pass, &(struct wlr_render_shadow_options){
 			.box = dst_box,
 			.clip = &render_region,
@@ -2540,10 +2587,8 @@ static void scene_entry_render(struct render_list_entry *entry, const struct ren
 			.swap_xy = swap_xy,
 			.flip_x = flip_x,
 			.flip_y = flip_y,
-			.radius_top = round((scene_shadow->decoration->title_bar ?
-				scene_shadow->decoration->title_bar_border_radius :
-				scene_shadow->decoration->border_radius) * data->scale * scale),
-			.radius_bottom = round(scene_shadow->decoration->border_radius * data->scale * scale),
+			.radius_top = radius_top,
+			.radius_bottom = radius_bottom,
 			.enabled = scene_shadow->enabled,
 			.blur = scene_shadow->blur,
 			.color = {
