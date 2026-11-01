@@ -898,12 +898,12 @@ bool vulkan_render_buffer_ensure_blur_image(struct wlr_vk_render_buffer *buffer)
 	}
 
 	VkDescriptorPoolSize pool_sizes[] = {
-		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2 * WLR_VK_BLUR_MAX_PASSES },
-		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2 * WLR_VK_BLUR_MAX_PASSES },
+		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2 * WLR_VK_BLUR_MAX_PASSES + 1 },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2 * WLR_VK_BLUR_MAX_PASSES + 1 },
 	};
 	VkDescriptorPoolCreateInfo pool_info = {
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-		.maxSets = 2 * WLR_VK_BLUR_MAX_PASSES,
+		.maxSets = 2 * WLR_VK_BLUR_MAX_PASSES + 1,
 		.poolSizeCount = 2,
 		.pPoolSizes = pool_sizes,
 	};
@@ -913,15 +913,15 @@ bool vulkan_render_buffer_ensure_blur_image(struct wlr_vk_render_buffer *buffer)
 		return false;
 	}
 
-	VkDescriptorSetLayout layouts[2 * WLR_VK_BLUR_MAX_PASSES];
-	VkDescriptorSet sets[2 * WLR_VK_BLUR_MAX_PASSES];
-	for (size_t i = 0; i < 2 * WLR_VK_BLUR_MAX_PASSES; i++) {
+	VkDescriptorSetLayout layouts[2 * WLR_VK_BLUR_MAX_PASSES + 1];
+	VkDescriptorSet sets[2 * WLR_VK_BLUR_MAX_PASSES + 1];
+	for (size_t i = 0; i < 2 * WLR_VK_BLUR_MAX_PASSES + 1; i++) {
 		layouts[i] = renderer->blur_ds_layout;
 	}
 	VkDescriptorSetAllocateInfo alloc_info = {
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
 		.descriptorPool = buffer->two_pass.blur_ds_pool,
-		.descriptorSetCount = 2 * WLR_VK_BLUR_MAX_PASSES,
+		.descriptorSetCount = 2 * WLR_VK_BLUR_MAX_PASSES + 1,
 		.pSetLayouts = layouts,
 	};
 	res = vkAllocateDescriptorSets(dev, &alloc_info, sets);
@@ -930,14 +930,38 @@ bool vulkan_render_buffer_ensure_blur_image(struct wlr_vk_render_buffer *buffer)
 		return false;
 	}
 
+	buffer->two_pass.blur_prepare_ds = sets[2 * WLR_VK_BLUR_MAX_PASSES];
+	VkDescriptorImageInfo prepare_src = {
+		.sampler = renderer->blur_sampler,
+		.imageView = buffer->two_pass.blend_image_view,
+		.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+	};
+	VkDescriptorImageInfo prepare_dst = {
+		.imageView = buffer->two_pass.blur_views[0],
+		.imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+	};
+	VkWriteDescriptorSet prepare_writes[2];
+	for (size_t i = 0; i < 2; i++) {
+		prepare_writes[i] = (VkWriteDescriptorSet){
+			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+			.dstSet = buffer->two_pass.blur_prepare_ds,
+			.dstBinding = i,
+			.descriptorCount = 1,
+			.descriptorType = i == 0 ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER :
+				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+		};
+	}
+	prepare_writes[0].pImageInfo = &prepare_src;
+	prepare_writes[1].pImageInfo = &prepare_dst;
+	vkUpdateDescriptorSets(dev, 2, prepare_writes, 0, NULL);
+
 	for (size_t i = 0; i < WLR_VK_BLUR_MAX_PASSES; i++) {
 		buffer->two_pass.blur_down_ds[i] = sets[2 * i];
 		buffer->two_pass.blur_up_ds[i] = sets[2 * i + 1];
 
 		VkDescriptorImageInfo down_src = {
 			.sampler = renderer->blur_sampler,
-			.imageView = i == 0 ? buffer->two_pass.blend_image_view :
-				buffer->two_pass.blur_views[i],
+			.imageView = buffer->two_pass.blur_views[i],
 			.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 		};
 		VkDescriptorImageInfo down_dst = {

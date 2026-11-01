@@ -292,6 +292,7 @@ struct wlr_vk_render_buffer {
 		VkDeviceMemory blur_memory;
 		VkImageView blur_views[WLR_VK_BLUR_MAX_PASSES + 1];
 		VkDescriptorPool blur_ds_pool;
+		VkDescriptorSet blur_prepare_ds; // reads the blend image, writes level 0
 		VkDescriptorSet blur_down_ds[WLR_VK_BLUR_MAX_PASSES]; // writes level i + 1
 		VkDescriptorSet blur_up_ds[WLR_VK_BLUR_MAX_PASSES]; // writes level i
 	} two_pass;
@@ -301,7 +302,7 @@ bool vulkan_render_buffer_ensure_blur_image(struct wlr_vk_render_buffer *buffer)
 
 // Matches the defines in blur.comp
 enum wlr_vk_blur_mode {
-	WLR_VK_BLUR_MODE_FIRST_DOWN,
+	WLR_VK_BLUR_MODE_PREPARE,
 	WLR_VK_BLUR_MODE_DOWN,
 	WLR_VK_BLUR_MODE_UP,
 	WLR_VK_BLUR_MODE_LAST_UP,
@@ -316,6 +317,7 @@ struct wlr_vk_blur_pcr_data {
 	float vibrancy;
 	float noise;
 	int32_t origin[2];
+	int32_t passes;
 };
 
 bool vulkan_setup_one_pass_framebuffer(struct wlr_vk_render_buffer *buffer,

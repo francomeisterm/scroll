@@ -1251,6 +1251,7 @@ static void blur_dispatch(struct wlr_vk_render_pass *pass, VkDescriptorSet ds,
 		.vibrancy = options->vibrancy,
 		.noise = options->noise,
 		.origin = { x1, y1 },
+		.passes = options->passes,
 	};
 	vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, renderer->blur_pipe_layout,
 		0, 1, &ds, 0, NULL);
@@ -1260,9 +1261,10 @@ static void blur_dispatch(struct wlr_vk_render_pass *pass, VkDescriptorSet ds,
 }
 
 /*
- * The blend image can't be read inside the render pass, so leave it, run the
- * blur shader down the mip levels and back up, copy the clip region of the
- * result into the blend image, and resume the render pass.
+ * The blend image can't be read inside the render pass, so leave it, prepare
+ * it into level 0 of the blur image, run the blur shader down the mip levels
+ * and back up, copy the clip region of the result into the blend image, and
+ * resume the render pass.
  */
 static void render_pass_add_blur(struct wlr_render_pass *wlr_pass,
 		const struct wlr_render_blur_options *options) {
@@ -1306,22 +1308,20 @@ static void render_pass_add_blur(struct wlr_render_pass *wlr_pass,
 		blur_image_barrier(cb, blur, i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
 	}
 
+	blur_dispatch(pass, buffer->two_pass.blur_prepare_ds, &box, 0, width, height, options,
+		WLR_VK_BLUR_MODE_PREPARE);
+
 	for (int i = 0; i < passes; i++) {
-		if (i > 0) {
-			blur_image_barrier(cb, blur, i, VK_IMAGE_LAYOUT_GENERAL,
-				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-		}
+		blur_image_barrier(cb, blur, i, VK_IMAGE_LAYOUT_GENERAL,
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		blur_dispatch(pass, buffer->two_pass.blur_down_ds[i], &box, i + 1,
-			width, height, options,
-			i == 0 ? WLR_VK_BLUR_MODE_FIRST_DOWN : WLR_VK_BLUR_MODE_DOWN);
+			width, height, options, WLR_VK_BLUR_MODE_DOWN);
 	}
 	for (int i = passes - 1; i >= 0; i--) {
 		blur_image_barrier(cb, blur, i + 1, VK_IMAGE_LAYOUT_GENERAL,
 			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-		if (i > 0) {
-			blur_image_barrier(cb, blur, i, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-				VK_IMAGE_LAYOUT_GENERAL);
-		}
+		blur_image_barrier(cb, blur, i, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			VK_IMAGE_LAYOUT_GENERAL);
 		blur_dispatch(pass, buffer->two_pass.blur_up_ds[i], &box, i,
 			width, height, options,
 			i == 0 ? WLR_VK_BLUR_MODE_LAST_UP : WLR_VK_BLUR_MODE_UP);
