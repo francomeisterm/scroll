@@ -258,6 +258,34 @@ static void handle_new_output_capture_request(struct wl_listener *listener, void
 	wlr_ext_output_image_capture_source_manager_v1_request_accept(request, source);
 }
 
+/*
+ * wlroots destroys the multi backend on its own when a primary sub-backend
+ * goes away: the seat session is lost (e.g. logind or the system D-Bus was
+ * restarted), or the parent display of a nested session is gone. Detach our
+ * listeners before wlr_backend_finish() asserts on them, forget the freed
+ * backend and shut down cleanly instead of aborting.
+ */
+static void handle_backend_destroy(struct wl_listener *listener, void *data) {
+	struct sway_server *server =
+		wl_container_of(listener, server, backend_destroy);
+	sway_log(SWAY_ERROR, "Backend destroyed (seat session or parent "
+		"display lost), shutting down");
+
+	wl_list_remove(&server->backend_destroy.link);
+	wl_list_init(&server->backend_destroy.link);
+	wl_list_remove(&server->new_output.link);
+	wl_list_init(&server->new_output.link);
+	if (server->input) {
+		wl_list_remove(&server->input->new_input.link);
+		wl_list_init(&server->input->new_input.link);
+	}
+	server->backend = NULL;
+	server->headless_backend = NULL;
+
+	// We are inside the backend teardown: don't dispatch the event loop.
+	sway_terminate_no_dispatch(EXIT_FAILURE);
+}
+
 bool server_init(struct sway_server *server) {
 	node_map_init();
 	sway_log(SWAY_DEBUG, "Initializing Wayland server");
@@ -288,6 +316,9 @@ bool server_init(struct sway_server *server) {
 		sway_log(SWAY_ERROR, "Unable to create backend");
 		return false;
 	}
+	wl_list_init(&server->new_output.link);
+	server->backend_destroy.notify = handle_backend_destroy;
+	wl_signal_add(&server->backend->events.destroy, &server->backend_destroy);
 
 	wlr_multi_for_each_backend(server->backend, detect_proprietary, NULL);
 
@@ -745,6 +776,7 @@ bool server_init(struct sway_server *server) {
 void server_fini(struct sway_server *server) {
 	// remove listeners
 	wl_list_remove(&server->renderer_lost.link);
+	wl_list_remove(&server->backend_destroy.link);
 	wl_list_remove(&server->new_output.link);
 	wl_list_remove(&server->layer_shell_surface.link);
 	wl_list_remove(&server->xdg_shell_toplevel.link);
@@ -778,7 +810,7 @@ void server_fini(struct sway_server *server) {
 	}
 #endif
 	wl_display_destroy_clients(server->wl_display);
-	wlr_backend_destroy(server->backend);
+	wlr_backend_destroy(server->backend); // NULL after backend loss: no-op
 	wl_display_destroy(server->wl_display);
 	list_free(server->dirty_nodes);
 	free(server->socket);

@@ -46,6 +46,7 @@ struct sway_server {
 
 	struct wl_listener new_output;
 	struct wl_listener renderer_lost;
+	struct wl_listener backend_destroy;
 	struct wl_event_source *recreating_renderer;
 
 	struct wlr_idle_notifier_v1 *idle_notifier_v1;
@@ -171,6 +172,9 @@ extern struct sway_debug debug;
 extern bool unsupported_gpu_detected;
 
 void sway_terminate(int exit_code);
+// Like sway_terminate(), but never dispatches the event loop (safe to call
+// from inside wlroots teardown).
+void sway_terminate_no_dispatch(int exit_code);
 
 bool server_init(struct sway_server *server);
 void server_fini(struct sway_server *server);

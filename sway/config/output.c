@@ -1113,6 +1113,9 @@ static void sort_output_configs_by_priority(
 
 static bool apply_resolved_output_configs(struct matched_output_config *configs,
 		size_t configs_len, bool test_only, bool degrade_to_off) {
+	if (!server.backend) {
+		return false; // backend lost, shutting down
+	}
 	struct wlr_backend_output_state *states = calloc(configs_len, sizeof(*states));
 	if (!states) {
 		return false;
