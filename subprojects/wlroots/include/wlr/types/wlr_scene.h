@@ -167,6 +167,9 @@ struct wlr_scene {
 	} blur;
 
 	bool restack_xwayland_surfaces;
+	// Surfaces in this scene ignore the compositor's per-view scale and
+	// animation scale (used for toplevel capture scenes)
+	bool no_view_scale;
 
 	struct {
 		struct wl_listener linux_dmabuf_v1_destroy;

@@ -364,6 +364,7 @@ static void handle_commit(struct wl_listener *listener, void *data) {
 		}
 
 		view_center_and_clip_surface(view);
+		view_update_capture_clip(view);
 	}
 
 	if (view->container->node.instruction) {

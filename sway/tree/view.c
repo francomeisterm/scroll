@@ -101,6 +101,9 @@ bool view_init(struct sway_view *view, enum sway_view_type type,
 		goto err;
 	}
 	view->image_capture_scene->restack_xwayland_surfaces = false;
+	// The capture copy shows the window as the client drew it, whatever
+	// animation or workspace scale the on-screen copy is going through
+	view->image_capture_scene->no_view_scale = true;
 
 	view->outputs_update.notify = handle_outputs_update;
 	wl_signal_add(&view->output_handler->events.outputs_update,
@@ -1209,12 +1212,11 @@ void view_unmap(struct sway_view *view) {
 	view->surface = NULL;
 }
 
-// The on-screen copy of an xdg window is clipped to its tile (content_tree);
-// do the same for the copy that toplevel capture (overview thumbnails) reads,
-// or a client whose buffer is larger than its tile (Chromium) is captured
-// whole and shows up with a different shape. Only the window's own surface
-// tree (first child) is clipped, not its popups.
-static void view_set_capture_clip(struct sway_view *view, const struct wlr_box *clip) {
+// Clip the copy that toplevel capture reads (overview thumbnails) to the
+// client's window geometry, so client-side shadows are left out. This follows
+// the client's commits, not the tile: a window on a hidden workspace gets no
+// animation steps, and a tile-based clip went stale there.
+void view_update_capture_clip(struct sway_view *view) {
 	if (view->type != SWAY_VIEW_XDG_SHELL) {
 		return;
 	}
@@ -1227,7 +1229,7 @@ static void view_set_capture_clip(struct sway_view *view, const struct wlr_box *
 	if (surface_tree->type != WLR_SCENE_NODE_TREE) {
 		return;
 	}
-	wlr_scene_subsurface_tree_set_clip(surface_tree, clip);
+	wlr_scene_subsurface_tree_set_clip(surface_tree, &view->geometry);
 }
 
 void view_update_size(struct sway_view *view) {
@@ -1266,7 +1268,6 @@ void view_center_and_clip_surface(struct sway_view *view) {
 			};
 		}
 		wlr_scene_subsurface_tree_set_clip(&con->view->content_tree->node, &clip);
-		view_set_capture_clip(con->view, &clip);
 	}
 }
 
@@ -1853,7 +1854,6 @@ static void clip_view(struct sway_view *view) {
 			.height = (int) fmax(1.0, round(ht / content_scale))
 		};
 		wlr_scene_subsurface_tree_set_clip(&view->content_tree->node, &clip);
-		view_set_capture_clip(view, &clip);
 	} else {
 		bool clip_to_geometry = true;
 
@@ -1868,7 +1868,6 @@ static void clip_view(struct sway_view *view) {
 				.height = round(view->container->pending.content_height)
 			};
 			wlr_scene_subsurface_tree_set_clip(&view->content_tree->node, &clip);
-			view_set_capture_clip(view, &clip);
 		}
 	}
 }
@@ -1970,13 +1969,6 @@ void view_reconfigure(struct sway_view *view) {
 	}
 	wlr_scene_node_for_each_buffer(&view->content_tree->node,
 		view_reconfigure_iterator, NULL);
-	// The toplevel capture copy has its own scene surfaces. They pick up the
-	// window-size animation scale when the client commits mid-animation, and
-	// kept it (a stretched capture) until the client's next commit.
-	if (view->image_capture_scene) {
-		wlr_scene_node_for_each_buffer(&view->image_capture_scene->tree.node,
-			view_reconfigure_iterator, NULL);
-	}
 
 	clip_view(view);
 	view_reconfigure_crossfade(view);

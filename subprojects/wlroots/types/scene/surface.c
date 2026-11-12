@@ -374,6 +374,10 @@ static void surface_reconfigure(struct wlr_scene_surface *scene_surface) {
 
 	struct wlr_scene_view_data view_data;
 	scene_cbs.view_data(surface, &view_data);
+	if (scene_node_get_root(&scene_buffer->node)->no_view_scale) {
+		view_data.total_scale = view_data.wscale = view_data.hscale = 1.0;
+		view_data.radius_top = view_data.radius_bottom = 0.0f;
+	}
 
 	// Compute a dst that can perfectly fit an aligned buffer in logical space
 	double dst_width = width * view_data.total_scale * view_data.wscale;
