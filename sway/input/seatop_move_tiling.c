@@ -132,8 +132,10 @@ static void handle_motion_postthreshold(struct sway_seat *seat) {
 		e->target_edge = WLR_EDGE_NONE;
 		return;
 	}
-	struct sway_workspace *old_workspace = e->con->pending.workspace;
-	bool move_parent = layout_get_type(old_workspace) == layout_modifiers_get_mode(old_workspace);
+	// A drag always moves the window under the cursor, never its whole
+	// column: the workspace mode decides where new windows go, and can change
+	// on every focus change (autosplit), so it would make drags unpredictable.
+	bool move_parent = false;
 	struct sway_workspace *workspace = con->pending.workspace;
 	enum sway_container_layout layout = layout_get_type(workspace);
 	struct wlr_box node_box;

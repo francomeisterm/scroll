@@ -1286,7 +1286,10 @@ void layout_move_container_to_workspace(struct sway_container *container, struct
 	// inserting it in the active container (if any), or creating a new one
 	enum sway_container_layout mode = layout_modifiers_get_mode(old_ws);
 	struct sway_container *active = workspace_get_active(workspace);
-	if (layout_get_type(old_ws) == mode) {
+	// A window moves on its own (and is placed like a new window, so fitsplit
+	// gives it half of the focused one); only a selected column moves whole.
+	// The mode alone can't decide this: autosplit changes it on every focus.
+	if (!container->view && layout_get_type(old_ws) == mode) {
 		// Move the whole container
 		struct sway_container *con = container->view ? container->pending.parent : container;
 		int old_idx = list_find(old_ws->tiling, con);
@@ -1307,6 +1310,12 @@ void layout_move_container_to_workspace(struct sway_container *container, struct
 		container_update_representation(parent);
 		node_set_dirty(&parent->node);
 		container_reap_empty(parent);
+		if (layout_modifiers_get_fit(workspace) != FIT_NONE) {
+			// Size it like a new window (fitsplit: half of the focused one)
+			// instead of keeping its fraction of the old workspace.
+			container->width_fraction = 0.0;
+			container->height_fraction = 0.0;
+		}
 		layout_add_view(workspace, active, container);
 		node_set_dirty(&container->node);
 	}
@@ -1593,10 +1602,44 @@ static void	swap_views(struct sway_container *container, struct sway_container *
 // 3.2 if edge is not parallel, extract container from its parent, create a new
 // parent container and move it to the correct location.
 //
+// In fitsplit mode a dropped window takes half of the window (or column) it
+// lands next to, the same way a new window does in set_initial_*_fraction(),
+// instead of keeping the size it had where it came from.
+static void drag_fit_split(struct sway_workspace *workspace,
+		struct sway_container *con, struct sway_container *ref,
+		enum sway_layout_axis axis) {
+	if (!con || !ref || layout_modifiers_get_fit(workspace) != FIT_SPLIT) {
+		return;
+	}
+	if (axis & AXIS_HORIZONTAL) {
+		ref->width_fraction *= 0.5;
+		con->width_fraction = ref->width_fraction;
+	} else {
+		ref->height_fraction *= 0.5;
+		con->height_fraction = ref->height_fraction;
+	}
+}
+
+// Swapped windows trade places but keep the slot sizes (fitsplit only), so a
+// swap doesn't also reshuffle the layout.
+static void drag_swap_fractions(struct sway_workspace *workspace,
+		struct sway_container *a, struct sway_container *b) {
+	if (layout_modifiers_get_fit(workspace) == FIT_NONE) {
+		return;
+	}
+	double h = a->height_fraction;
+	a->height_fraction = b->height_fraction;
+	b->height_fraction = h;
+	double w = a->width_fraction;
+	a->width_fraction = b->width_fraction;
+	b->width_fraction = w;
+}
+
 void layout_drag_container_to_container(struct sway_container *container, struct sway_container *target,
 		struct sway_workspace *workspace, enum wlr_edges edge) {
 	struct sway_workspace *old_workspace = container->pending.workspace;
-	bool move_parent = layout_get_type(old_workspace) == layout_modifiers_get_mode(old_workspace);
+	// Always move the dragged window, not its column (see seatop_move_tiling.c)
+	bool move_parent = false;
 	enum sway_container_layout layout = layout_get_type(workspace);
 	if (move_parent) {
 		// Get parent (top level container)
@@ -1658,51 +1701,67 @@ void layout_drag_container_to_container(struct sway_container *container, struct
 		if (container == target) {
 			return;
 		}
-		// Check if parent can be a top level container...???
+		// Column of the target before the move (the drop may reap the dragged
+		// window's old column, but never the target's).
+		struct sway_container *tparent = target->pending.parent;
 		if (layout == L_HORIZ) {
 			switch (edge) {
 			case WLR_EDGE_TOP:
 				// Parallel
 				insert_view_before(container, target);
+				drag_fit_split(workspace, container, target, AXIS_VERTICAL);
 				break;
 			case WLR_EDGE_BOTTOM:
 				// Parallel
 				insert_view_after(container, target);
+				drag_fit_split(workspace, container, target, AXIS_VERTICAL);
 				break;
 			case WLR_EDGE_LEFT:
 				// Move container
-				extract_view_and_insert_before(container, target->pending.parent, workspace);
+				extract_view_and_insert_before(container, tparent, workspace);
+				drag_fit_split(workspace, container->pending.parent, tparent, AXIS_HORIZONTAL);
+				container->height_fraction = 1.0;
 				break;
 			case WLR_EDGE_RIGHT:
 				// Move container
-				extract_view_and_insert_after(container, target->pending.parent, workspace);
+				extract_view_and_insert_after(container, tparent, workspace);
+				drag_fit_split(workspace, container->pending.parent, tparent, AXIS_HORIZONTAL);
+				container->height_fraction = 1.0;
 				break;
 			case WLR_EDGE_NONE:
 				// Swap views
 				swap_views(container, target);
+				drag_swap_fractions(workspace, container, target);
 				break;
 			}
 		} else {
 			switch (edge) {
 			case WLR_EDGE_TOP:
 				// Move container
-				extract_view_and_insert_before(container, target->pending.parent, workspace);
+				extract_view_and_insert_before(container, tparent, workspace);
+				drag_fit_split(workspace, container->pending.parent, tparent, AXIS_VERTICAL);
+				container->width_fraction = 1.0;
 				break;
 			case WLR_EDGE_BOTTOM:
 				// Move container
-				extract_view_and_insert_after(container, target->pending.parent, workspace);
+				extract_view_and_insert_after(container, tparent, workspace);
+				drag_fit_split(workspace, container->pending.parent, tparent, AXIS_VERTICAL);
+				container->width_fraction = 1.0;
 				break;
 			case WLR_EDGE_LEFT:
 				// Parallel
 				insert_view_before(container, target);
+				drag_fit_split(workspace, container, target, AXIS_HORIZONTAL);
 				break;
 			case WLR_EDGE_RIGHT:
 				// Parallel
 				insert_view_after(container, target);
+				drag_fit_split(workspace, container, target, AXIS_HORIZONTAL);
 				break;
 			case WLR_EDGE_NONE:
 				// Swap views
 				swap_views(container, target);
+				drag_swap_fractions(workspace, container, target);
 				break;
 			}
 		}

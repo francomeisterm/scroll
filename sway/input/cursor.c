@@ -403,6 +403,26 @@ void dispatch_cursor_button(struct sway_cursor *cursor,
 		time_msec = get_current_time_in_msec();
 	}
 
+	// A button press while a key is held cancels that key's --release
+	// binding, so $mod+drag doesn't also run `bindsym --release $mod ...`
+	// when the modifier is let go.
+	if (state == WL_POINTER_BUTTON_STATE_PRESSED) {
+		// Keys of grouped keyboards (the usual case) are handled by the
+		// group's own sway_keyboard, which isn't in seat->devices.
+		struct sway_seat_device *seat_device;
+		wl_list_for_each(seat_device, &cursor->seat->devices, link) {
+			if (seat_device->keyboard) {
+				seat_device->keyboard->held_binding = NULL;
+			}
+		}
+		struct sway_keyboard_group *group;
+		wl_list_for_each(group, &cursor->seat->keyboard_groups, link) {
+			if (group->seat_device && group->seat_device->keyboard) {
+				group->seat_device->keyboard->held_binding = NULL;
+			}
+		}
+	}
+
 	seatop_button(cursor->seat, time_msec, device, button, state);
 }
 
