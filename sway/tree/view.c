@@ -1876,7 +1876,9 @@ static void clip_view(struct sway_view *view) {
 static void view_reconfigure_iterator(struct wlr_scene_buffer *buffer,
 		int sx, int sy, void *user_data) {
 	struct wlr_scene_surface *scene_surface = wlr_scene_surface_try_from_buffer(buffer);
-	wlr_scene_surface_reconfigure(scene_surface);
+	if (scene_surface) {
+		wlr_scene_surface_reconfigure(scene_surface);
+	}
 }
 
 // The old content of the view is still on top of the new one, fading out. It
@@ -1968,6 +1970,13 @@ void view_reconfigure(struct sway_view *view) {
 	}
 	wlr_scene_node_for_each_buffer(&view->content_tree->node,
 		view_reconfigure_iterator, NULL);
+	// The toplevel capture copy has its own scene surfaces. They pick up the
+	// window-size animation scale when the client commits mid-animation, and
+	// kept it (a stretched capture) until the client's next commit.
+	if (view->image_capture_scene) {
+		wlr_scene_node_for_each_buffer(&view->image_capture_scene->tree.node,
+			view_reconfigure_iterator, NULL);
+	}
 
 	clip_view(view);
 	view_reconfigure_crossfade(view);
