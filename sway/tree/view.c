@@ -1209,6 +1209,27 @@ void view_unmap(struct sway_view *view) {
 	view->surface = NULL;
 }
 
+// The on-screen copy of an xdg window is clipped to its tile (content_tree);
+// do the same for the copy that toplevel capture (overview thumbnails) reads,
+// or a client whose buffer is larger than its tile (Chromium) is captured
+// whole and shows up with a different shape. Only the window's own surface
+// tree (first child) is clipped, not its popups.
+static void view_set_capture_clip(struct sway_view *view, const struct wlr_box *clip) {
+	if (view->type != SWAY_VIEW_XDG_SHELL) {
+		return;
+	}
+	struct wlr_scene_tree *tree = ((struct sway_xdg_shell_view *)view)->image_capture_tree;
+	if (!tree || wl_list_empty(&tree->children)) {
+		return;
+	}
+	struct wlr_scene_node *surface_tree =
+		wl_container_of(tree->children.next, surface_tree, link);
+	if (surface_tree->type != WLR_SCENE_NODE_TREE) {
+		return;
+	}
+	wlr_scene_subsurface_tree_set_clip(surface_tree, clip);
+}
+
 void view_update_size(struct sway_view *view) {
 	struct sway_container *con = view->container;
 	con->pending.content_width = view->geometry.width;
@@ -1245,6 +1266,7 @@ void view_center_and_clip_surface(struct sway_view *view) {
 			};
 		}
 		wlr_scene_subsurface_tree_set_clip(&con->view->content_tree->node, &clip);
+		view_set_capture_clip(con->view, &clip);
 	}
 }
 
@@ -1831,6 +1853,7 @@ static void clip_view(struct sway_view *view) {
 			.height = (int) fmax(1.0, round(ht / content_scale))
 		};
 		wlr_scene_subsurface_tree_set_clip(&view->content_tree->node, &clip);
+		view_set_capture_clip(view, &clip);
 	} else {
 		bool clip_to_geometry = true;
 
@@ -1845,6 +1868,7 @@ static void clip_view(struct sway_view *view) {
 				.height = round(view->container->pending.content_height)
 			};
 			wlr_scene_subsurface_tree_set_clip(&view->content_tree->node, &clip);
+			view_set_capture_clip(view, &clip);
 		}
 	}
 }
