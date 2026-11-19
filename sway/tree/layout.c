@@ -8,6 +8,7 @@
 #include "sway/input/seat.h"
 #include "sway/server.h"
 #include "util.h"
+#include "log.h"
 #include <wayland-util.h>
 #include "sway/input/keyboard.h"
 #include "sway/desktop/transaction.h"
@@ -1303,13 +1304,25 @@ void layout_move_container_to_workspace(struct sway_container *container, struct
 		// Move only the view
 		// Extract the view from the parent container
 		struct sway_container *parent = container->pending.parent;
-		list_t *siblings = parent->pending.children;
-		list_del(siblings, list_find(siblings, container));
-		container->pending.parent = NULL;
-		container_detach_update_parent_fullscreen_layout(parent, container);
-		container_update_representation(parent);
-		node_set_dirty(&parent->node);
-		container_reap_empty(parent);
+		if (parent) {
+			list_t *siblings = parent->pending.children;
+			list_del(siblings, list_find(siblings, container));
+			container->pending.parent = NULL;
+			container_detach_update_parent_fullscreen_layout(parent, container);
+			container_update_representation(parent);
+			node_set_dirty(&parent->node);
+			container_reap_empty(parent);
+		} else {
+			// A tiled view with no column around it (e.g. left over from a
+			// drag) sits directly in the workspace; take it out of there.
+			sway_log(SWAY_DEBUG, "Moving parentless tiled view %p to workspace %s",
+				(void *)container, workspace->name);
+			int idx = list_find(old_ws->tiling, container);
+			if (idx >= 0) {
+				list_del(old_ws->tiling, idx);
+				node_set_dirty(&old_ws->node);
+			}
+		}
 		if (layout_modifiers_get_fit(workspace) != FIT_NONE) {
 			// Size it like a new window (fitsplit: half of the focused one)
 			// instead of keeping its fraction of the old workspace.
@@ -1373,8 +1386,16 @@ void layout_drag_container_to_workspace(struct sway_container *container, struct
 	} else {
 		// Extract the view from the parent container if needed
 		struct sway_container *parent = container->pending.parent;
-		list_t *siblings = parent->pending.children;
-		if (siblings->length > 1) {
+		if (!parent) {
+			// Parentless tiled view: give it a column before relocating.
+			int idx = list_find(old_workspace->tiling, container);
+			if (idx >= 0) {
+				list_del(old_workspace->tiling, idx);
+				node_set_dirty(&old_workspace->node);
+			}
+			parent = layout_wrap_into_container(container, layout == L_HORIZ ? L_VERT : L_HORIZ);
+		} else if (parent->pending.children->length > 1) {
+			list_t *siblings = parent->pending.children;
 			list_del(siblings, list_find(siblings, container));
 			container->pending.parent = NULL;
 			container_update_representation(parent);
